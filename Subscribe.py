@@ -1,8 +1,14 @@
 """
-Unified BSE+NSE company search bar. Matched companies only (present on both
-exchanges, NSE series EQ). Master list only — subscribe logic comes later.
+Subscribe page (TEST BUILD — no auth, RLS off, keep local).
+Enter an email, pick companies from the live matched BSE+NSE list, write rows
+into Supabase `subscriptions`. DB unique constraint on (email, company_key)
+rejects duplicates; we report those separately.
+
 Run:  streamlit run subscribe.py
 Deps: pip install streamlit requests
+Secrets (.streamlit/secrets.toml):
+    SUPABASE_URL = "https://xxxx.supabase.co"
+    SUPABASE_KEY = "your-key"
 """
 import csv
 import requests
@@ -10,6 +16,9 @@ import streamlit as st
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 # ---------- BSE ----------
 BSE_H = {"User-Agent": UA, "Accept": "application/json",
@@ -67,17 +76,51 @@ def matched_companies():
     return out
 
 
+def insert_subscription(email, c):
+    """Insert one row. Returns 'added', 'duplicate', or an error string."""
+    url = f"{SUPABASE_URL}/rest/v1/subscriptions"
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+               "Content-Type": "application/json", "Prefer": "return=minimal"}
+    payload = {"email": email, "company_key": c["symbol"],
+               "bse_code": c["bse_code"], "nse_symbol": c["nse_symbol"]}
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=20)
+        if r.status_code in (200, 201, 204):
+            return "added"
+        if r.status_code == 409:          # unique constraint -> already subscribed
+            return "duplicate"
+        return f"error {r.status_code}: {r.text[:120]}"
+    except Exception as e:
+        return f"error: {e}"
+
+
 st.title("Subscribe to filing alerts")
+st.caption("Test build — no login yet.")
 
 companies = matched_companies()
-lab = {f"{c['symbol']} — {c['name']}": c for c in companies}
-choice = st.selectbox("Company", list(lab), index=None,
-                      placeholder="Type a name or ticker…",
-                      label_visibility="collapsed")
+by_label = {f"{c['symbol']} — {c['name']}": c for c in companies}
 
-if choice:
-    c = lab[choice]
-    st.write(f"**{c['name']}**")
-    st.write(f"BSE — scrip code `{c['bse_code']}`  ·  NSE — symbol `{c['nse_symbol']}`")
-else:
-    st.caption(f"{len(companies)} companies available (listed on both BSE & NSE).")
+email = st.text_input("Email", placeholder="name@ashikagroup.com").strip()
+picks = st.multiselect("Companies", list(by_label),
+                       placeholder="Type a name or ticker…")
+
+if st.button("Subscribe", disabled=not (email and picks)):
+    added, dupes, errors = [], [], []
+    for label in picks:
+        c = by_label[label]
+        res = insert_subscription(email, c)
+        if res == "added":
+            added.append(c["symbol"])
+        elif res == "duplicate":
+            dupes.append(c["symbol"])
+        else:
+            errors.append(f"{c['symbol']}: {res}")
+
+    if added:
+        st.success(f"Added: {', '.join(added)}")
+    if dupes:
+        st.info(f"Already subscribed (skipped): {', '.join(dupes)}")
+    if errors:
+        st.error("Errors:\n" + "\n".join(errors))
+
+st.caption(f"{len(companies)} companies available (listed on both BSE & NSE).")
