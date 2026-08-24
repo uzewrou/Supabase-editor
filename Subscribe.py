@@ -1,17 +1,16 @@
 """
-Subscribe page — Microsoft login (Streamlit native auth) + Supabase writes.
-Users sign in with Microsoft; the VERIFIED email from st.user drives their
-subscriptions. Live matched BSE+NSE list (EQ, both exchanges). Cap 60/email.
+Subscribe page — Supabase-owned OAuth (Google + Microsoft, any account) on Streamlit.
+Users sign in via Supabase; the VERIFIED email from the Supabase session drives
+their subscriptions. Live matched BSE+NSE list (EQ, both exchanges). Cap 60/email.
 
 Run:  streamlit run subscribe.py
-Deps: pip install "streamlit>=1.62" requests  (Authlib is required by st.login)
-Secrets: SUPABASE_URL, SUPABASE_KEY, and an [auth] block (see setup notes).
+Deps: streamlit, requests, supabase
+Secrets: SUPABASE_URL, SUPABASE_KEY
 """
 import csv
 import requests
 import streamlit as st
-st.write("DEBUG — logged in?", st.user.is_logged_in)
-st.write("DEBUG — user object:", dict(st.user) if st.user.is_logged_in else "not logged in")
+from supabase import create_client
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -19,7 +18,10 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
 MAX_PER_EMAIL = 60
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------- BSE ----------
 BSE_H = {"User-Agent": UA, "Accept": "application/json",
@@ -107,28 +109,76 @@ def insert_subscription(email, c):
         return f"error: {e}"
 
 
-# ==================== LOGIN GATE ====================
+# ==================== AUTH ====================
+def get_login_url(provider):
+    res = supabase.auth.sign_in_with_oauth({
+        "provider": provider,
+        "options": {"redirect_to": APP_URL},
+    })
+    return res.url
+
+
+def current_email():
+    """Return verified email if a valid session is in st.session_state, else None."""
+    tokens = st.session_state.get("sb_session")
+    if not tokens:
+        return None
+    try:
+        user = supabase.auth.get_user(tokens["access_token"])
+        return (user.user.email or "").strip().lower()
+    except Exception:
+        st.session_state.pop("sb_session", None)
+        return None
+
+
 st.title("Subscribe to filing alerts")
 
-if not st.user.is_logged_in:
-    st.write("Please sign in to manage your filing-alert subscriptions.")
-    st.button("Sign in with Microsoft", on_click=st.login, args=("microsoft",),
-              type="primary")
-    st.stop()
+# --- Step 1: catch the token the browser has in the URL fragment (#access_token=...) ---
+# Supabase returns tokens in the URL fragment, which the server can't see.
+# This JS reads the fragment and reloads with the tokens as query params Streamlit CAN read.
+st.markdown("""
+<script>
+const h = window.location.hash;
+if (h && h.includes("access_token")) {
+    const p = new URLSearchParams(h.substring(1));
+    const at = p.get("access_token");
+    const rt = p.get("refresh_token");
+    if (at) {
+        const u = new URL(window.location.href);
+        u.hash = "";
+        u.searchParams.set("at", at);
+        u.searchParams.set("rt", rt || "");
+        window.location.replace(u.toString());
+    }
+}
+</script>
+""", unsafe_allow_html=True)
 
-# Logged in from here on. Email is VERIFIED by Microsoft — not typed.
-email = (st.user.email or "").strip().lower()
+# --- Step 2: if tokens arrived as query params, store them and clean the URL ---
+qp = st.query_params
+if "at" in qp and "sb_session" not in st.session_state:
+    st.session_state["sb_session"] = {"access_token": qp["at"], "refresh_token": qp.get("rt", "")}
+    st.query_params.clear()
+    st.rerun()
 
-top = st.container()
-with top:
-    c1, c2 = st.columns([4, 1])
-    c1.caption(f"Signed in as **{email}**")
-    c2.button("Log out", on_click=st.logout)
+email = current_email()
 
+# --- Step 3: not logged in -> show buttons ---
 if not email:
-    st.error("Signed in, but no email was provided by the identity provider. "
-             "Cannot manage subscriptions without an email.")
+    st.write("Sign in to manage your filing-alert subscriptions.")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.link_button("Sign in with Microsoft", get_login_url("azure"), type="primary")
+    with col2:
+        st.link_button("Sign in with Google", get_login_url("google"))
     st.stop()
+
+# --- Logged in ---
+c1, c2 = st.columns([4, 1])
+c1.caption(f"Signed in as **{email}**")
+if c2.button("Log out"):
+    st.session_state.pop("sb_session", None)
+    st.rerun()
 
 # ==================== SUBSCRIBE UI ====================
 companies = matched_companies()
