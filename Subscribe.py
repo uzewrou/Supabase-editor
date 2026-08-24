@@ -10,6 +10,8 @@ Secrets: SUPABASE_URL, SUPABASE_KEY, and an [auth] block (see setup notes).
 import csv
 import requests
 import streamlit as st
+st.write("DEBUG — logged in?", st.user.is_logged_in)
+st.write("DEBUG — user object:", dict(st.user) if st.user.is_logged_in else "not logged in")
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
