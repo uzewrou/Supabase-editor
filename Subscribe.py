@@ -1,15 +1,11 @@
 """
-Subscribe page (TEST BUILD — no auth, RLS off, keep local/private).
-Enter an email -> auto-loads that person's current subscriptions from Supabase
-into a table with a count. Pick companies from the live matched BSE+NSE list and
-Subscribe -> writes rows into `subscriptions`. Cap: 60 companies per email.
-DB unique constraint on (email, company_key) rejects duplicates.
+Subscribe page — Microsoft login (Streamlit native auth) + Supabase writes.
+Users sign in with Microsoft; the VERIFIED email from st.user drives their
+subscriptions. Live matched BSE+NSE list (EQ, both exchanges). Cap 60/email.
 
 Run:  streamlit run subscribe.py
-Deps: pip install streamlit requests
-Secrets (.streamlit/secrets.toml or Streamlit Cloud secrets):
-    SUPABASE_URL = "https://xxxx.supabase.co"
-    SUPABASE_KEY = "sb_publishable_..."
+Deps: pip install "streamlit>=1.62" requests  (Authlib is required by st.login)
+Secrets: SUPABASE_URL, SUPABASE_KEY, and an [auth] block (see setup notes).
 """
 import csv
 import requests
@@ -80,7 +76,6 @@ def matched_companies():
 
 
 def get_subscriptions(email):
-    """Return list of this email's rows from Supabase (empty list on none/error)."""
     url = f"{SUPABASE_URL}/rest/v1/subscriptions"
     params = {"select": "company_key,bse_code,nse_symbol",
               "email": f"eq.{email}", "order": "company_key.asc"}
@@ -95,7 +90,6 @@ def get_subscriptions(email):
 
 
 def insert_subscription(email, c):
-    """Insert one row. Returns 'added', 'duplicate', or an error string."""
     url = f"{SUPABASE_URL}/rest/v1/subscriptions"
     headers = {**SB_HEADERS, "Content-Type": "application/json", "Prefer": "return=minimal"}
     payload = {"email": email, "company_key": c["symbol"],
@@ -111,49 +105,67 @@ def insert_subscription(email, c):
         return f"error: {e}"
 
 
+# ==================== LOGIN GATE ====================
 st.title("Subscribe to filing alerts")
-st.caption("Test build — no login yet.")
 
+if not st.user.is_logged_in:
+    st.write("Please sign in to manage your filing-alert subscriptions.")
+    st.button("Sign in with Microsoft", on_click=st.login, args=("microsoft",),
+              type="primary")
+    st.stop()
+
+# Logged in from here on. Email is VERIFIED by Microsoft — not typed.
+email = (st.user.email or "").strip().lower()
+
+top = st.container()
+with top:
+    c1, c2 = st.columns([4, 1])
+    c1.caption(f"Signed in as **{email}**")
+    c2.button("Log out", on_click=st.logout)
+
+if not email:
+    st.error("Signed in, but no email was provided by the identity provider. "
+             "Cannot manage subscriptions without an email.")
+    st.stop()
+
+# ==================== SUBSCRIBE UI ====================
 companies = matched_companies()
 by_label = {f"{c['symbol']} — {c['name']}": c for c in companies}
 
-email = st.text_input("Email", placeholder="name@ashikagroup.com").strip()
+current = get_subscriptions(email)
+n = len(current)
+st.subheader(f"Your subscriptions — {n} / {MAX_PER_EMAIL}")
+if current:
+    st.dataframe(current, width="stretch", hide_index=True)
+else:
+    st.caption("No subscriptions yet.")
 
-if email:
-    current = get_subscriptions(email)
-    n = len(current)
-    st.subheader(f"Current subscriptions — {n} / {MAX_PER_EMAIL}")
-    if current:
-        st.dataframe(current, use_container_width=True, hide_index=True)
-    else:
-        st.caption("No subscriptions yet for this email.")
+remaining = MAX_PER_EMAIL - n
+picks = st.multiselect("Add companies", list(by_label),
+                       placeholder="Type a name or ticker…")
 
-    remaining = MAX_PER_EMAIL - n
-    picks = st.multiselect("Add companies", list(by_label),
-                           placeholder="Type a name or ticker…")
+over = len(picks) > remaining
+if over:
+    st.warning(f"You have {remaining} slot(s) left but picked {len(picks)}. "
+               f"Remove {len(picks) - remaining} to stay under {MAX_PER_EMAIL}.")
 
-    over = len(picks) > remaining
-    if over:
-        st.warning(f"You have {remaining} slot(s) left but picked {len(picks)}. "
-                   f"Remove {len(picks) - remaining} to stay under {MAX_PER_EMAIL}.")
-
-    if st.button("Subscribe", disabled=not picks or over):
-        added, dupes, errors = [], [], []
-        for label in picks:
-            c = by_label[label]
-            res = insert_subscription(email, c)
-            if res == "added":
-                added.append(c["symbol"])
-            elif res == "duplicate":
-                dupes.append(c["symbol"])
-            else:
-                errors.append(f"{c['symbol']}: {res}")
-        if added:
-            st.success(f"Added: {', '.join(added)}")
-        if dupes:
-            st.info(f"Already subscribed (skipped): {', '.join(dupes)}")
-        if errors:
-            st.error("Errors:\n" + "\n".join(errors))
-        st.rerun()   # refresh the table + count
+if st.button("Subscribe", disabled=not picks or over, type="primary"):
+    added, dupes, errors = [], [], []
+    for label in picks:
+        c = by_label[label]
+        res = insert_subscription(email, c)
+        if res == "added":
+            added.append(c["symbol"])
+        elif res == "duplicate":
+            dupes.append(c["symbol"])
+        else:
+            errors.append(f"{c['symbol']}: {res}")
+    if added:
+        st.success(f"Added: {', '.join(added)}")
+    if dupes:
+        st.info(f"Already subscribed (skipped): {', '.join(dupes)}")
+    if errors:
+        st.error("Errors:\n" + "\n".join(errors))
+    st.rerun()
 
 st.caption(f"{len(companies)} companies available (listed on both BSE & NSE).")
