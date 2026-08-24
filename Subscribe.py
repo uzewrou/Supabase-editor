@@ -133,6 +133,13 @@ def current_email():
 
 st.title("Subscribe to filing alerts")
 
+# ===== DEBUG =====
+st.write("DEBUG query_params:", dict(st.query_params))
+st.write("DEBUG has sb_session:", "sb_session" in st.session_state)
+if "sb_session" in st.session_state:
+    st.write("DEBUG session keys:", list(st.session_state["sb_session"].keys()))
+# ===== END DEBUG =====
+
 # --- Step 1: catch the token the browser has in the URL fragment (#access_token=...) ---
 # Supabase returns tokens in the URL fragment, which the server can't see.
 # This JS reads the fragment and reloads with the tokens as query params Streamlit CAN read.
