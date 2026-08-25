@@ -1,9 +1,10 @@
 """
 Subscribe page — Supabase-owned OAuth (Google + Microsoft, any account).
-Uses the IMPLICIT flow: Supabase returns tokens in the URL fragment
-(#access_token=...), which we grab with a little JS and set as the session.
-Avoids the PKCE code-verifier persistence problem on Streamlit.
+PKCE code flow: Supabase returns ?code=..., exchanged for a session.
 Verified email drives subscriptions. Cap 60/email.
+
+NOTE: Google login works with this. Microsoft may hit a PKCE verifier
+mismatch on Streamlit (known fiddly edge) — Google-only is a fine interim.
 
 Run:  streamlit run subscribe.py
 Deps: streamlit, requests, supabase
@@ -24,18 +25,14 @@ APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
 MAX_PER_EMAIL = 60
 
 
-def make_client():
-    # Create the client the default way, then switch to the implicit flow.
-    # (Passing ClientOptions(flow_type=...) directly is broken in this
-    # supabase-py version — it drops the storage attribute. Overriding
-    # _flow_type after creation avoids that and still gives us implicit,
-    # so tokens come back in the URL fragment with no PKCE verifier to lose.)
-    client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    client.auth._flow_type = "implicit"
-    return client
+@st.cache_resource
+def get_supabase():
+    # One shared client so the PKCE code_verifier persists between the
+    # login redirect and the code exchange.
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-supabase = make_client()
+supabase = get_supabase()
 
 # ---------- BSE ----------
 BSE_H = {"User-Agent": UA, "Accept": "application/json",
@@ -132,49 +129,30 @@ def login_url(provider):
     return res.url
 
 
+def logged_in_email():
+    try:
+        session = supabase.auth.get_session()
+        if session and session.user:
+            return (session.user.email or "").strip().lower()
+    except Exception:
+        pass
+    return None
+
+
 st.title("Subscribe to filing alerts")
 
-# --- Step 1: tokens arrive in the URL FRAGMENT (#access_token=...) which the
-# server can't read. This JS moves them into query params and reloads. ---
-st.markdown("""
-<script>
-const h = window.location.hash;
-if (h && h.includes("access_token")) {
-    const p = new URLSearchParams(h.substring(1));
-    const at = p.get("access_token");
-    const rt = p.get("refresh_token");
-    if (at) {
-        const u = new URL(window.location.href);
-        u.hash = "";
-        u.searchParams.set("at", at);
-        u.searchParams.set("rt", rt || "");
-        window.location.replace(u.toString());
-    }
-}
-</script>
-""", unsafe_allow_html=True)
-
-# --- Step 2: if tokens are in query params, set the session and store it ---
+# --- Handle the ?code=... redirect from Supabase (PKCE flow) ---
 qp = st.query_params
-if "at" in qp and "sb_at" not in st.session_state:
+if "code" in qp:
     try:
-        supabase.auth.set_session(qp["at"], qp.get("rt", ""))
-        st.session_state["sb_at"] = qp["at"]
-        st.session_state["sb_rt"] = qp.get("rt", "")
+        supabase.auth.exchange_code_for_session({"auth_code": qp["code"]})
+        st.query_params.clear()
+        st.rerun()
     except Exception as e:
-        st.error(f"Login failed setting session: {e}")
-    st.query_params.clear()
-    st.rerun()
+        st.error(f"Login failed during code exchange: {e}")
+        st.query_params.clear()
 
-# --- Step 3: resolve the logged-in email from the stored token ---
-email = None
-if "sb_at" in st.session_state:
-    try:
-        user = supabase.auth.get_user(st.session_state["sb_at"])
-        email = (user.user.email or "").strip().lower()
-    except Exception:
-        st.session_state.pop("sb_at", None)
-        st.session_state.pop("sb_rt", None)
+email = logged_in_email()
 
 # --- Not logged in -> buttons ---
 if not email:
@@ -190,8 +168,10 @@ if not email:
 c1, c2 = st.columns([4, 1])
 c1.caption(f"Signed in as **{email}**")
 if c2.button("Log out"):
-    for k in ("sb_at", "sb_rt"):
-        st.session_state.pop(k, None)
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
     st.rerun()
 
 # ==================== SUBSCRIBE UI ====================
