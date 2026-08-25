@@ -33,7 +33,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
 ANON = st.secrets["SUPABASE_ANON_KEY"]
-APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
+APP_URL = "https://filings-sentinel.streamlit.app"
 MAX_PER_EMAIL = 60
 
 NSE = "https://www.nseindia.com"
