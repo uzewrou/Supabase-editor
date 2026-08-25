@@ -14,6 +14,7 @@ import csv
 import requests
 import streamlit as st
 from supabase import create_client
+import streamlit.components.v1 as components
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -121,14 +122,22 @@ def insert_subscription(email, c):
 
 
 # ==================== AUTH ====================
-def start_login(provider):
+def google_login_url():
     res = supabase.auth.sign_in_with_oauth({
-        "provider": provider,
+        "provider": "google",
         "options": {"redirect_to": APP_URL},
     })
-    st.markdown(
+    return res.url
+
+
+def start_microsoft_login():
+    res = supabase.auth.sign_in_with_oauth({
+        "provider": "azure",
+        "options": {"redirect_to": APP_URL},
+    })
+    components.html(
         f'<script>window.top.location.href = "{res.url}";</script>',
-        unsafe_allow_html=True,
+        height=0,
     )
     st.stop()
 
@@ -163,10 +172,8 @@ if not email:
     st.write("Sign in to manage your filing-alert subscriptions.")
     col1, col2 = st.columns(2)
     if col1.button("Sign in with Microsoft", type="primary"):
-        start_login("azure")
-    if col2.button("Sign in with Google"):
-        start_login("google")
-    st.stop()
+        start_microsoft_login()
+    col2.link_button("Sign in with Google", google_login_url())
 
 # --- Logged in ---
 c1, c2 = st.columns([4, 1])
