@@ -13,7 +13,6 @@ import csv
 import requests
 import streamlit as st
 from supabase import create_client
-from supabase.lib.client_options import ClientOptions
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -26,9 +25,14 @@ MAX_PER_EMAIL = 60
 
 
 def make_client():
-    # implicit flow => tokens come back in URL fragment, no PKCE verifier to lose.
-    return create_client(SUPABASE_URL, SUPABASE_KEY,
-                         options=ClientOptions(flow_type="implicit"))
+    # Create the client the default way, then switch to the implicit flow.
+    # (Passing ClientOptions(flow_type=...) directly is broken in this
+    # supabase-py version — it drops the storage attribute. Overriding
+    # _flow_type after creation avoids that and still gives us implicit,
+    # so tokens come back in the URL fragment with no PKCE verifier to lose.)
+    client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    client.auth._flow_type = "implicit"
+    return client
 
 
 supabase = make_client()
