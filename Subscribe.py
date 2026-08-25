@@ -224,7 +224,15 @@ def subscriptions_run(email):
     n = len(current)
     st.subheader(f"Your subscriptions — {n} / {MAX_PER_EMAIL}")
     if current:
-        st.dataframe(current, width="stretch", hide_index=True)
+        for row in current:
+            col_a, col_b = st.columns([6, 1])
+            col_a.write(f"{row['company_key']}  ·  BSE {row['bse_code']}  ·  NSE {row['nse_symbol']}")
+            if col_b.button("✕", key=f"del_{row['company_key']}"):
+                res = delete_subscription(email, row["company_key"])
+                if res == "deleted":
+                    st.rerun()
+                else:
+                    st.error(res)
     else:
         st.caption("No subscriptions yet.")
 
