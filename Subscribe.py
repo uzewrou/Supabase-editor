@@ -1,20 +1,21 @@
 """
-Subscribe page — Supabase-owned OAuth (Google + Microsoft, any account).
-PKCE code flow: Supabase returns ?code=..., exchanged for a session.
-Verified email drives subscriptions. Cap 60/email.
+Subscribe page — Supabase OAuth (Google + Microsoft, any account).
+Manual PKCE: we build the authorize URL + verifier ourselves, then exchange
+the returned ?code=... for a session over REST.
 
-Login: Google is a direct one-click link_button. Microsoft is a button
-that reveals a "Continue" link, because login.microsoftonline.com refuses
-to load inside Streamlit's iframe and only navigates via a real anchor.
+Identity lives in st.session_state (per browser session), NOT in the shared
+supabase client — so one user's login never shows up for another user.
 
 Run:  streamlit run subscribe.py
-Deps: streamlit, requests, supabase
+Deps: streamlit, requests
 Secrets: SUPABASE_URL, SUPABASE_KEY
 """
 import csv
+import base64
+import hashlib
+import secrets
 import requests
 import streamlit as st
-from supabase import create_client
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -24,16 +25,6 @@ SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
 APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
 MAX_PER_EMAIL = 60
-
-
-@st.cache_resource
-def get_supabase():
-    # One shared client so the PKCE code_verifier persists between the
-    # login redirect and the code exchange.
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-
-supabase = get_supabase()
 
 # ---------- BSE ----------
 BSE_H = {"User-Agent": UA, "Accept": "application/json",
@@ -121,56 +112,70 @@ def insert_subscription(email, c):
         return f"error: {e}"
 
 
-# ==================== AUTH ====================
+# ==================== AUTH (manual PKCE, per-session identity) ====================
+@st.cache_resource
+def _pkce_store():
+    # Global, short-lived: holds only PKCE verifiers (not sessions) so they
+    # survive the full-page OAuth redirect. Consumed + cleared on exchange.
+    # Never holds identity, so nothing here can leak between users.
+    return {}
+
+
+def _pkce_pair():
+    verifier = secrets.token_urlsafe(64)[:96]
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).decode().rstrip("=")
+    return verifier, challenge
+
+
 def oauth_url(provider):
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": provider,
-        "options": {"redirect_to": APP_URL},
-    })
-    return res.url
+    verifier, challenge = _pkce_pair()
+    _pkce_store()[provider] = verifier
+    return (f"{SUPABASE_URL}/auth/v1/authorize"
+            f"?provider={provider}&redirect_to={APP_URL}"
+            f"&code_challenge={challenge}&code_challenge_method=s256")
 
 
-def start_microsoft_login():
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "azure",
-        "options": {"redirect_to": APP_URL},
-    })
-    st.link_button("Continue to Microsoft sign-in →", res.url, type="primary")
-    st.info("Click the link above to finish signing in with Microsoft.")
-    st.stop()
-
-
-def logged_in_email():
-    try:
-        session = supabase.auth.get_session()
-        if session and session.user:
-            return (session.user.email or "").strip().lower()
-    except Exception:
-        pass
+def exchange_code(code):
+    store = _pkce_store()
+    for provider, verifier in list(store.items()):
+        try:
+            r = requests.post(
+                f"{SUPABASE_URL}/auth/v1/token?grant_type=pkce",
+                headers={"apikey": SUPABASE_KEY, "Content-Type": "application/json"},
+                json={"auth_code": code, "code_verifier": verifier},
+                timeout=20,
+            )
+        except Exception:
+            continue
+        if r.status_code == 200:
+            store.pop(provider, None)  # consume it
+            return r.json()
     return None
 
 
 st.title("Subscribe to filing alerts")
 
-# --- Handle the ?code=... redirect from Supabase (PKCE flow) ---
+# --- Handle the ?code=... redirect: exchange, stash identity per-session ---
 qp = st.query_params
 if "code" in qp:
-    try:
-        supabase.auth.exchange_code_for_session({"auth_code": qp["code"]})
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"Login failed during code exchange: {e}")
-        st.query_params.clear()
+    session = exchange_code(qp["code"])
+    if session and session.get("user"):
+        st.session_state["email"] = (session["user"].get("email") or "").strip().lower()
+    else:
+        st.error("Login failed during code exchange. Please try signing in again.")
+    st.query_params.clear()
+    st.rerun()
 
-email = logged_in_email()
+# Identity comes ONLY from this browser's session_state — never the shared client.
+email = st.session_state.get("email")
 
-# --- Not logged in -> buttons ---
+# --- Not logged in -> one-click links (real anchors; work for both providers) ---
 if not email:
     st.write("Sign in to manage your filing-alert subscriptions.")
     col1, col2 = st.columns(2)
-    if col1.button("Sign in with Microsoft", type="primary"):
-        start_microsoft_login()
+    col1.link_button("Sign in with Microsoft", oauth_url("azure"), type="primary")
     col2.link_button("Sign in with Google", oauth_url("google"))
     st.stop()
 
@@ -178,10 +183,7 @@ if not email:
 c1, c2 = st.columns([4, 1])
 c1.caption(f"Signed in as **{email}**")
 if c2.button("Log out"):
-    try:
-        supabase.auth.sign_out()
-    except Exception:
-        pass
+    st.session_state.pop("email", None)
     st.rerun()
 
 # ==================== SUBSCRIBE UI ====================
