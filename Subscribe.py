@@ -15,6 +15,9 @@ import requests
 import streamlit as st
 from supabase import create_client
 import streamlit.components.v1 as components
+import base64
+import hashlib
+import secrets
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -122,48 +125,57 @@ def insert_subscription(email, c):
 
 
 # ==================== AUTH ====================
-def google_login_url():
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "google",
-        "options": {"redirect_to": APP_URL},
-    })
-    return res.url
+# ==================== AUTH (manual PKCE) ====================
+@st.cache_resource
+def _pkce_store():
+    # Global (survives the OAuth full-page redirect, unlike session_state).
+    return {}
 
 
-def start_microsoft_login():
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "azure",
-        "options": {"redirect_to": APP_URL},
-    })
-    st.link_button("Continue to Microsoft sign-in →", res.url, type="primary")
-    st.info("Click the link above to finish signing in with Microsoft.")
-    st.stop()
+def _pkce_pair():
+    verifier = secrets.token_urlsafe(64)[:96]
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).decode().rstrip("=")
+    return verifier, challenge
 
 
-def logged_in_email():
-    try:
-        session = supabase.auth.get_session()
-        if session and session.user:
-            return (session.user.email or "").strip().lower()
-    except Exception:
-        pass
+def oauth_url(provider):
+    verifier, challenge = _pkce_pair()
+    _pkce_store()[provider] = verifier
+    return (f"{SUPABASE_URL}/auth/v1/authorize"
+            f"?provider={provider}&redirect_to={APP_URL}"
+            f"&code_challenge={challenge}&code_challenge_method=s256")
+
+
+def exchange_code(code):
+    store = _pkce_store()
+    for verifier in list(store.values()):
+        r = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token?grant_type=pkce",
+            headers={"apikey": SUPABASE_KEY, "Content-Type": "application/json"},
+            json={"auth_code": code, "code_verifier": verifier},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            return r.json()
     return None
 
 
 st.title("Subscribe to filing alerts")
 
-# --- Handle the ?code=... redirect from Supabase (PKCE flow) ---
+# --- Handle the ?code=... redirect (manual PKCE exchange) ---
 qp = st.query_params
 if "code" in qp:
-    try:
-        supabase.auth.exchange_code_for_session({"auth_code": qp["code"]})
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"Login failed during code exchange: {e}")
-        st.query_params.clear()
+    session = exchange_code(qp["code"])
+    if session and session.get("user"):
+        st.session_state["email"] = (session["user"].get("email") or "").strip().lower()
+    else:
+        st.error("Login failed during code exchange.")
+    st.query_params.clear()
+    st.rerun()
 
-email = logged_in_email()
+email = st.session_state.get("email")
 
 # --- Not logged in -> buttons ---
 if not email:
