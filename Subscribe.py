@@ -572,15 +572,17 @@ def bse_run():
 
 
 # ============================================================ MAIN
+# ============================================================ MAIN
 st.title("Filing alerts")
 
-# --- Handle the ?code=... redirect: exchange, stash identity + token per-session ---
+# --- Handle the ?code=... redirect (only relevant for the Alerts tab) ---
 qp = st.query_params
 if "code" in qp:
     session = exchange_code(qp["code"])
     if session and session.get("user") and session.get("access_token"):
         st.session_state["email"] = (session["user"].get("email") or "").strip().lower()
         st.session_state["token"] = session["access_token"]
+        st.session_state["section"] = "Filing Alerts"   # land back on the Alerts tab
     else:
         st.error("Login failed during code exchange. Please try signing in again.")
     st.query_params.clear()
@@ -588,27 +590,26 @@ if "code" in qp:
 
 email = st.session_state.get("email")
 
-# --- Not logged in -> one-click links ---
-if not email:
-    st.write("Sign in to manage your filing-alert subscriptions.")
-    col1, col2 = st.columns(2)
-    col1.link_button("Sign in with Microsoft", oauth_url("azure"), type="primary")
-    col2.link_button("Sign in with Google", oauth_url("google"))
-    st.stop()
-
-# --- Logged in: header bar + view switch ---
-c1, c2 = st.columns([4, 1])
-c1.caption(f"Signed in as **{email}**")
-if c2.button("Log out"):
-    st.session_state.pop("email", None)
-    st.session_state.pop("token", None)
-    st.rerun()
-
-section = st.radio("Section", ["NSE", "BSE", "Alerts"],
+# --- Three tabs, always visible, no login to reach them ---
+section = st.radio("Section", ["NSE", "BSE", "Filing Alerts"],
                    horizontal=True, label_visibility="collapsed", key="section")
+
 if section == "NSE":
     nse_run()
 elif section == "BSE":
     bse_run()
 else:
-    subscriptions_run(email)
+    # Filing Alerts — login required only here
+    if not email:
+        st.write("Sign in to manage your filing-alert subscriptions.")
+        col1, col2 = st.columns(2)
+        col1.link_button("Sign in with Microsoft", oauth_url("azure"), type="primary")
+        col2.link_button("Sign in with Google", oauth_url("google"))
+    else:
+        c1, c2 = st.columns([4, 1])
+        c1.caption(f"Signed in as **{email}**")
+        if c2.button("Log out"):
+            st.session_state.pop("email", None)
+            st.session_state.pop("token", None)
+            st.rerun()
+        subscriptions_run(email)
