@@ -1,24 +1,33 @@
 """
-Subscribe page — Supabase OAuth (Google + Microsoft, any account).
-Manual PKCE: build authorize URL + verifier ourselves, exchange ?code=... for a session.
+Filing alerts — subscription page + NSE/BSE filings browser (single file).
 
-Security model:
-- Identity + access token live in st.session_state (per browser session).
-- Reads/writes go to PostgREST with the USER's access token, so RLS policies
-  (email-scoped) enforce that each user only sees/edits their own rows.
-- This app uses ONLY the anon key. The service_role key stays in bot.py.
+After login, a toggle switches between:
+  • My subscriptions — pick/drop companies for the alert bot (Supabase, RLS-scoped)
+  • Browse filings   — live NSE/BSE quarterly results & investor presentations
+
+Security: identity + access token live in st.session_state (per browser).
+Reads/writes use the user's JWT so RLS enforces per-user rows.
+This app uses ONLY the anon key. The service_role key stays in bot.py.
 
 Run:  streamlit run subscribe.py
 Deps: streamlit, requests
 Secrets: SUPABASE_URL, SUPABASE_ANON_KEY
 """
+import re
 import csv
+import html
 import base64
 import hashlib
 import secrets
+import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
+
 import requests
 import streamlit as st
 
+st.set_page_config(page_title="Filing alerts", page_icon="📊", layout="wide")
+
+# ============================================================ shared constants
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
@@ -27,16 +36,54 @@ ANON = st.secrets["SUPABASE_ANON_KEY"]
 APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
 MAX_PER_EMAIL = 60
 
-# ---------- BSE ----------
+NSE = "https://www.nseindia.com"
+NSE_CSV = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+
 BSE_H = {"User-Agent": UA, "Accept": "application/json",
          "Referer": "https://www.bseindia.com/", "Origin": "https://www.bseindia.com"}
 BSE_SCRIP = "https://api.bseindia.com/BseIndiaAPI/api/ListofScripData_new/w"
 
-# ---------- NSE ----------
-NSE = "https://www.nseindia.com"
-NSE_CSV = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+START_YEAR = 2016
+
+# ============================================================ filings CSS
+st.markdown("""
+<style>
+  .block-container {max-width: 1050px; padding-top: 3.5rem;}
+  .title {font-size: 26px; font-weight: 700; letter-spacing: -.4px; margin: 0;}
+  .sub {font-size: 13px; opacity: .55; margin: 2px 0 14px;}
+  .cobar {display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+          border-left:3px solid #3d8bfd; background:rgba(37,99,235,.07);
+          border-radius:6px; padding:10px 15px; margin:8px 0 4px;}
+  .cobar b {font-size:18px; letter-spacing:-.2px;}
+  .cobar span {font-size:12.5px; opacity:.6;}
+  .qh {font-size:13px; font-weight:700; letter-spacing:.5px; color:#3d8bfd;
+       margin:20px 0 6px; text-transform:uppercase;}
+  .card {border:1px solid rgba(128,128,128,.2); border-radius:9px;
+         padding:11px 14px; margin:7px 0; background:rgba(128,128,128,.04);}
+  .card.top {border-color:rgba(38,166,91,.5); background:rgba(38,166,91,.08);}
+  .card.ann {border-color:rgba(147,51,234,.4); background:rgba(147,51,234,.05);}
+  .card .m {font-size:11.5px; opacity:.65; font-family:ui-monospace,monospace; margin-bottom:4px;}
+  .card .h {font-size:13.5px; line-height:1.45;}
+  .card .d {font-size:12px; opacity:.6; line-height:1.4; margin:3px 0 5px;}
+  .card a {font-size:12.5px; font-weight:600; color:#3d8bfd; text-decoration:none;}
+  .card a:hover {text-decoration:underline;}
+  .pill {font-size:9px; font-weight:700; letter-spacing:.5px; padding:2px 7px;
+         border-radius:20px; margin-left:6px; text-transform:uppercase;}
+  .pill.t {background:rgba(38,166,91,.2); color:#34c47c;}
+  .pill.a {background:rgba(147,51,234,.18); color:#c08ae8;}
+  div[role="radiogroup"] {gap:6px;}
+</style>
+""", unsafe_allow_html=True)
 
 
+def qsort_key(q):
+    if q == "Other":
+        return (-1, 0)
+    m = re.match(r"FY(\d+)\s+Q(\d)", q)
+    return (int(m.group(1)), int(m.group(2)))
+
+
+# ==================== SUBSCRIPTIONS: company matching ====================
 @st.cache_data(ttl=86400, show_spinner=False)
 def bse_by_symbol():
     params = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
@@ -117,6 +164,7 @@ def insert_subscription(email, c):
     except Exception as e:
         return f"error: {e}"
 
+
 def delete_subscription(email, company_key):
     url = f"{SUPABASE_URL}/rest/v1/subscriptions"
     params = {"email": f"eq.{email}", "company_key": f"eq.{company_key}"}
@@ -130,8 +178,6 @@ def delete_subscription(email, company_key):
 # ==================== AUTH (manual PKCE, per-session identity) ====================
 @st.cache_resource
 def _pkce_store():
-    # Global, short-lived: holds only PKCE verifiers (not sessions) so they
-    # survive the full-page OAuth redirect. Consumed + cleared on exchange.
     return {}
 
 
@@ -164,12 +210,375 @@ def exchange_code(code):
         except Exception:
             continue
         if r.status_code == 200:
-            store.pop(provider, None)  # consume it
+            store.pop(provider, None)
             return r.json()
     return None
 
 
-st.title("Subscribe to filing alerts")
+# ==================== SUBSCRIPTIONS VIEW ====================
+def subscriptions_run(email):
+    companies = matched_companies()
+    by_label = {f"{c['symbol']} — {c['name']}": c for c in companies}
+
+    current = get_subscriptions(email)
+    n = len(current)
+    st.subheader(f"Your subscriptions — {n} / {MAX_PER_EMAIL}")
+    if current:
+        st.dataframe(current, width="stretch", hide_index=True)
+    else:
+        st.caption("No subscriptions yet.")
+
+    if current:
+        drop = st.multiselect("Remove companies",
+                              [row["company_key"] for row in current],
+                              placeholder="Pick tickers to unsubscribe…")
+        if st.button("Remove", disabled=not drop):
+            removed, errors = [], []
+            for key in drop:
+                res = delete_subscription(email, key)
+                if res == "deleted":
+                    removed.append(key)
+                else:
+                    errors.append(f"{key}: {res}")
+            if removed:
+                st.success(f"Removed: {', '.join(removed)}")
+            if errors:
+                st.error("Errors:\n" + "\n".join(errors))
+            st.rerun()
+
+    remaining = MAX_PER_EMAIL - n
+    picks = st.multiselect("Add companies", list(by_label),
+                           placeholder="Type a name or ticker…")
+
+    over = len(picks) > remaining
+    if over:
+        st.warning(f"You have {remaining} slot(s) left but picked {len(picks)}. "
+                   f"Remove {len(picks) - remaining} to stay under {MAX_PER_EMAIL}.")
+
+    if st.button("Subscribe", disabled=not picks or over, type="primary"):
+        added, dupes, errors = [], [], []
+        for label in picks:
+            c = by_label[label]
+            res = insert_subscription(email, c)
+            if res == "added":
+                added.append(c["symbol"])
+            elif res == "duplicate":
+                dupes.append(c["symbol"])
+            else:
+                errors.append(f"{c['symbol']}: {res}")
+        if added:
+            st.success(f"Added: {', '.join(added)}")
+        if dupes:
+            st.info(f"Already subscribed (skipped): {', '.join(dupes)}")
+        if errors:
+            st.error("Errors:\n" + "\n".join(errors))
+        st.rerun()
+
+    st.caption(f"{len(companies)} companies available (listed on both BSE & NSE).")
+
+
+# ============================================================ FILINGS: NSE
+NSE_MONTH_Q = {7: ("Q1", 1), 8: ("Q1", 1), 10: ("Q2", 1), 11: ("Q2", 1),
+               1: ("Q3", 0), 2: ("Q3", 0), 4: ("Q4", 0), 5: ("Q4", 0), 6: ("Q4", 0)}
+NSE_KW = ("financial results", "financial statement", "quarter ended", "year ended",
+          "audited", "unaudited", "standalone", "consolidated")
+
+
+def nse_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": UA,
+        "Accept": "application/json", "Accept-Language": "en-US,en;q=0.9",
+    })
+    for u in (NSE + "/get-quotes/equity?symbol=RELIANCE",
+              NSE + "/api/equity-stock-indices?index=NIFTY%20500"):
+        try:
+            s.get(u, timeout=8)
+        except Exception:
+            pass
+    return s
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def nse_names():
+    try:
+        r = nse_session().get(
+            "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv", timeout=25)
+        return {row["Symbol"].strip(): row["Company Name"].strip()
+                for row in csv.DictReader(r.text.splitlines())
+                if row.get("Symbol") and row.get("Company Name")}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def nse_companies():
+    try:
+        s = nse_session()
+        s.headers["Referer"] = NSE + "/market-data/live-equity-market"
+        r = s.get(NSE + "/api/equity-stock-indices?index=NIFTY%20500", timeout=25)
+        names = nse_names()
+        out = [{"symbol": row["symbol"], "name": names.get(row["symbol"]) or row["symbol"]}
+               for row in r.json()["data"] if not row["symbol"].upper().startswith("NIFTY")]
+        out.sort(key=lambda c: c["symbol"])
+        return out
+    except Exception as e:
+        return {"_error": f"{type(e).__name__}: {e}"}
+
+
+def nse_quarter(an_dt):
+    d = dt.datetime.strptime(an_dt.split()[0], "%d-%b-%Y").date()
+    if d.month not in NSE_MONTH_Q:
+        return "Other"
+    q, add = NSE_MONTH_Q[d.month]
+    return f"FY{str(d.year + add)[2:]} {q}"
+
+
+def nse_strength(text, url):
+    if any(k in (text or "").lower() for k in NSE_KW):
+        return 2
+    fn = (url or "").lower().rsplit("/", 1)[-1]
+    if any(x in fn for x in ("fundraise", "appoint", "gdr", "qip", "director")):
+        return 0
+    return 1 if ("result" in fn or "financial" in fn) else 0
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def nse_lookup(symbol, n_years):
+    s = nse_session()
+    to, windows = dt.date.today(), []
+    for _ in range(n_years):
+        frm = to.replace(year=to.year - 1)
+        windows.append((frm, to))
+        to = frm
+
+    def one(w):
+        url = (NSE + "/api/corporate-announcements?index=equities&symbol=" + symbol
+               + "&from_date=" + w[0].strftime("%d-%m-%Y") + "&to_date=" + w[1].strftime("%d-%m-%Y"))
+        h = dict(s.headers, Referer=NSE + "/get-quotes/equity?symbol=" + symbol)
+        try:
+            return s.get(url, headers=h, timeout=25).json()
+        except Exception:
+            return []
+
+    rows = []
+    with ThreadPoolExecutor(max_workers=min(3, len(windows))) as ex:
+        for chunk in ex.map(one, windows):
+            rows.extend(chunk)
+
+    def bucketed(kind):
+        want = "Outcome of Board Meeting" if kind == "results" else "Investor Presentation"
+        buckets, seen = {}, set()
+        for row in rows:
+            if row.get("desc") != want:
+                continue
+            uid = row.get("attchmntFile") or (row.get("an_dt", "") + (row.get("attchmntText") or "")[:40])
+            if uid in seen:
+                continue
+            seen.add(uid)
+            strength = nse_strength(row.get("attchmntText"), row.get("attchmntFile")) if kind == "results" else 0
+            buckets.setdefault(nse_quarter(row["an_dt"]), []).append({
+                "date": row["an_dt"], "desc": row.get("attchmntText", ""),
+                "url": row.get("attchmntFile", ""), "strength": strength,
+                "size": row.get("attFileSize") or "",
+            })
+        for q in buckets:
+            buckets[q].sort(key=lambda x: x["date"], reverse=True)
+            if kind == "results":
+                buckets[q].sort(key=lambda x: -x["strength"])
+        return [{"quarter": q, "items": buckets[q]} for q in sorted(buckets, key=qsort_key, reverse=True)]
+
+    return {"n_rows": len(rows), "results": bucketed("results"),
+            "presentations": bucketed("presentations")}
+
+
+def nse_render(quarters, kind):
+    if not quarters:
+        st.info("No filings found.")
+        return
+    links = []
+    for q in quarters:
+        st.markdown(f"<div class='qh'>{html.escape(q['quarter'])}</div>", unsafe_allow_html=True)
+        for i, it in enumerate(q["items"]):
+            top = kind == "results" and i == 0 and it["strength"] > 0
+            annual = top and q["quarter"].endswith("Q4")
+            if top or kind != "results":
+                links.append(it["url"])
+            pill = ("<span class='pill t'>likely</span>" if top else "") + \
+                   ("<span class='pill a'>annual</span>" if annual else "")
+            cls = "top" if top else ""
+            st.markdown(
+                f"<div class='card {cls}'><div class='m'>{html.escape(it['date'])} · "
+                f"{html.escape(it['size'])}{pill}</div><div class='d'>{html.escape(it['desc'])}</div>"
+                f"<a href='{html.escape(it['url'])}' target='_blank'>Open PDF ↗</a></div>",
+                unsafe_allow_html=True)
+    if links:
+        with st.expander(f"📋 Copy {len(links)} links"):
+            st.code("\n".join(links), language=None)
+
+
+def nse_run():
+    st.markdown('<div class="title">📊 NSE Quarterly Results &amp; Presentations</div>'
+                '<div class="sub">NIFTY 500 · links only · live from NSE</div>', unsafe_allow_html=True)
+    companies = nse_companies()
+    if isinstance(companies, dict):
+        st.error(f"Couldn't load NSE company list. {companies['_error']}")
+        return
+    lab = {(c["symbol"] if c["name"] == c["symbol"] else f"{c['symbol']} — {c['name']}"): c
+           for c in companies}
+    choice = st.selectbox("Company", list(lab), index=None,
+                          placeholder="Search a company…", label_visibility="collapsed", key="nse_co")
+    latest = st.radio("Range", ["Latest quarter", f"Full history (since {START_YEAR})"],
+                      horizontal=True, label_visibility="collapsed", key="nse_scope").startswith("Latest")
+    if not choice:
+        st.caption("Pick a company to load its filings.")
+        return
+    sym = lab[choice]["symbol"]
+    n_years = 1 if latest else dt.date.today().year - START_YEAR
+    with st.spinner(f"Fetching {sym} from NSE…"):
+        data = nse_lookup(sym, n_years)
+    if data["n_rows"] == 0:
+        nse_lookup.clear()
+        st.error(f"NSE returned nothing for {sym} (blocked or timed out). Retry in a moment.")
+        return
+    res = data["results"][:1] if latest else data["results"]
+    ppt = data["presentations"][:1] if latest else data["presentations"]
+    n_res = sum(len(q["items"]) for q in res)
+    n_ppt = sum(len(q["items"]) for q in ppt)
+    st.markdown(f'<div class="cobar"><b>{html.escape(sym)}</b>'
+                f'<span>{html.escape(lab[choice]["name"])}</span></div>', unsafe_allow_html=True)
+    t1, t2 = st.tabs([f"Results ({n_res})", f"Presentations ({n_ppt})"])
+    with t1:
+        nse_render(res, "results")
+    with t2:
+        nse_render(ppt, "presentations")
+
+
+# ============================================================ FILINGS: BSE
+BSE_ANN = "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
+BSE_ASPX = "https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname="
+BSE_CORP = "https://www.bseindia.com/xml-data/corpfiling/CorpAttachment/"
+BSE_MONTH_Q = {7: ("Q1", 1), 8: ("Q1", 1), 9: ("Q1", 1), 10: ("Q2", 1), 11: ("Q2", 1),
+               12: ("Q2", 1), 1: ("Q3", 0), 2: ("Q3", 0), 3: ("Q3", 0),
+               4: ("Q4", 0), 5: ("Q4", 0), 6: ("Q4", 0)}
+
+
+@st.cache_data(ttl=86400, show_spinner="Loading BSE company list…")
+def bse_companies():
+    params = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
+    rows = requests.get(BSE_SCRIP, headers=BSE_H, params=params, timeout=25).json()
+    out = [{"code": str(r["SCRIP_CD"]), "symbol": r.get("scrip_id") or "",
+            "name": r.get("Scrip_Name") or r.get("Issuer_Name") or ""} for r in rows]
+    out.sort(key=lambda c: c["name"].lower())
+    return out
+
+
+def bse_dt(row):
+    raw = (row.get("DissemDT") or row.get("News_submission_dt") or row.get("NEWS_DT") or "").split(".")[0]
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return dt.datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def bse_quarter(d):
+    if not d or d.month not in BSE_MONTH_Q:
+        return "Other"
+    q, add = BSE_MONTH_Q[d.month]
+    return f"FY{str(d.year + add)[2:]} {q}"
+
+
+def bse_pdf(row):
+    fn = row.get("ATTACHMENTNAME") or ""
+    if not fn:
+        return ""
+    if row.get("PDFFLAG") == 2:
+        p = (row.get("DissemDT") or row.get("NEWS_DT") or "")[:10].split("-")
+        return f"{BSE_CORP}{p[0]}/{int(p[1])}/{fn}" if len(p) == 3 else ""
+    return f"{BSE_ASPX}{fn}"
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def bse_fetch(code, n_years, cat, subcat):
+    to = dt.date.today()
+    frm = to.replace(year=to.year - n_years)
+    params = {"pageno": 1, "strCat": cat, "subcategory": subcat,
+              "strPrevDate": frm.strftime("%Y%m%d"), "strToDate": to.strftime("%Y%m%d"),
+              "strScrip": code, "strSearch": "P", "strType": "C"}
+    data = requests.get(BSE_ANN, headers=BSE_H, params=params, timeout=30).json()
+    table = data.get("Table", []) if isinstance(data, dict) else []
+    buckets = {}
+    for r in table:
+        d = bse_dt(r)
+        buckets.setdefault(bse_quarter(d), []).append({
+            "date": d.strftime("%d %b %Y") if d else "", "raw": d or dt.datetime.min,
+            "title": r.get("NEWSSUB") or "", "desc": r.get("HEADLINE") or "",
+            "url": bse_pdf(r), "size": r.get("Fld_Attachsize") or 0,
+        })
+    for q in buckets:
+        buckets[q].sort(key=lambda x: x["raw"], reverse=True)
+    return [{"quarter": q, "items": buckets[q]} for q in sorted(buckets, key=qsort_key, reverse=True)]
+
+
+def bse_render(quarters, kind):
+    if not quarters:
+        st.info("No filings found.")
+        return
+    for q in quarters:
+        st.markdown(f'<div class="qh">{q["quarter"]}</div>', unsafe_allow_html=True)
+        for it in q["items"]:
+            ann = kind == "results" and q["quarter"].endswith("Q4")
+            pill = '<span class="pill a">annual</span>' if ann else ""
+            kb = f'{int(it["size"]) / 1024:.0f} KB' if it["size"] else ""
+            link = f'<a href="{it["url"]}" target="_blank">Open PDF ↗</a>' if it["url"] else ""
+            st.markdown(f'<div class="card {"ann" if ann else ""}"><div class="m">{it["date"]} · '
+                        f'{kb}{pill}</div><div class="h">{it["title"]}</div>'
+                        f'<div class="d">{it["desc"]}</div>{link}</div>',
+                        unsafe_allow_html=True)
+
+
+def bse_run():
+    st.markdown('<div class="title">📊 BSE Quarterly Results</div>'
+                '<div class="sub">Any listed company · links only · live from BSE</div>',
+                unsafe_allow_html=True)
+    companies = bse_companies()
+    lab = {f"{c['symbol'] or c['code']} — {c['name']} ({c['code']})": c for c in companies}
+    choice = st.selectbox("Company", list(lab), index=None,
+                          placeholder="Type a name, ticker, or code…",
+                          label_visibility="collapsed", key="bse_co")
+    scope = st.radio("Range", ["Latest", "5Y", "10Y"], horizontal=True,
+                     label_visibility="collapsed", key="bse_scope")
+    n_years = {"Latest": 1, "5Y": 5, "10Y": 10}[scope]
+    if not choice:
+        st.caption(f"{len(companies)} BSE companies available.")
+        return
+    c = lab[choice]
+    with st.spinner(f"Fetching {c['name']} from BSE…"):
+        res = bse_fetch(c["code"], n_years, "Result", "Financial Results")
+        ppt = bse_fetch(c["code"], n_years, "Company Update", "Investor Presentation")
+    if scope == "Latest":
+        res, ppt = res[:1], ppt[:1]
+    n_res = sum(len(q["items"]) for q in res)
+    n_ppt = sum(len(q["items"]) for q in ppt)
+    st.markdown(f'<div class="cobar"><b>{c["symbol"] or c["code"]}</b>'
+                f'<span>{c["name"]}</span></div>', unsafe_allow_html=True)
+    t1, t2 = st.tabs([f"Results ({n_res})", f"Presentations ({n_ppt})"])
+    with t1:
+        bse_render(res, "results")
+    with t2:
+        bse_render(ppt, "presentations")
+
+
+def filings_run():
+    exchange = st.radio("Exchange", ["NSE", "BSE"], horizontal=True,
+                        label_visibility="collapsed", key="exchange")
+    nse_run() if exchange == "NSE" else bse_run()
+
+
+# ============================================================ MAIN
+st.title("Filing alerts")
 
 # --- Handle the ?code=... redirect: exchange, stash identity + token per-session ---
 qp = st.query_params
@@ -183,10 +592,9 @@ if "code" in qp:
     st.query_params.clear()
     st.rerun()
 
-# Identity comes ONLY from this browser's session_state — never a shared client.
 email = st.session_state.get("email")
 
-# --- Not logged in -> one-click links (real anchors; work for both providers) ---
+# --- Not logged in -> one-click links ---
 if not email:
     st.write("Sign in to manage your filing-alert subscriptions.")
     col1, col2 = st.columns(2)
@@ -194,7 +602,7 @@ if not email:
     col2.link_button("Sign in with Google", oauth_url("google"))
     st.stop()
 
-# --- Logged in ---
+# --- Logged in: header bar + view switch ---
 c1, c2 = st.columns([4, 1])
 c1.caption(f"Signed in as **{email}**")
 if c2.button("Log out"):
@@ -202,62 +610,9 @@ if c2.button("Log out"):
     st.session_state.pop("token", None)
     st.rerun()
 
-# ==================== SUBSCRIBE UI ====================
-companies = matched_companies()
-by_label = {f"{c['symbol']} — {c['name']}": c for c in companies}
-
-current = get_subscriptions(email)
-n = len(current)
-st.subheader(f"Your subscriptions — {n} / {MAX_PER_EMAIL}")
-if current:
-    st.dataframe(current, width="stretch", hide_index=True)
+view = st.radio("View", ["My subscriptions", "Browse filings"],
+                horizontal=True, label_visibility="collapsed", key="view")
+if view == "My subscriptions":
+    subscriptions_run(email)
 else:
-    st.caption("No subscriptions yet.")
-
-if current:
-    drop = st.multiselect("Remove companies",
-                          [row["company_key"] for row in current],
-                          placeholder="Pick tickers to unsubscribe…")
-    if st.button("Remove", disabled=not drop):
-        removed, errors = [], []
-        for key in drop:
-            res = delete_subscription(email, key)
-            if res == "deleted":
-                removed.append(key)
-            else:
-                errors.append(f"{key}: {res}")
-        if removed:
-            st.success(f"Removed: {', '.join(removed)}")
-        if errors:
-            st.error("Errors:\n" + "\n".join(errors))
-        st.rerun()
-      
-remaining = MAX_PER_EMAIL - n
-picks = st.multiselect("Add companies", list(by_label),
-                       placeholder="Type a name or ticker…")
-
-over = len(picks) > remaining
-if over:
-    st.warning(f"You have {remaining} slot(s) left but picked {len(picks)}. "
-               f"Remove {len(picks) - remaining} to stay under {MAX_PER_EMAIL}.")
-
-if st.button("Subscribe", disabled=not picks or over, type="primary"):
-    added, dupes, errors = [], [], []
-    for label in picks:
-        c = by_label[label]
-        res = insert_subscription(email, c)
-        if res == "added":
-            added.append(c["symbol"])
-        elif res == "duplicate":
-            dupes.append(c["symbol"])
-        else:
-            errors.append(f"{c['symbol']}: {res}")
-    if added:
-        st.success(f"Added: {', '.join(added)}")
-    if dupes:
-        st.info(f"Already subscribed (skipped): {', '.join(dupes)}")
-    if errors:
-        st.error("Errors:\n" + "\n".join(errors))
-    st.rerun()
-
-st.caption(f"{len(companies)} companies available (listed on both BSE & NSE).")
+    filings_run()
