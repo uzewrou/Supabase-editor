@@ -135,10 +135,8 @@ def start_microsoft_login():
         "provider": "azure",
         "options": {"redirect_to": APP_URL},
     })
-    components.html(
-        f'<script>window.top.location.href = "{res.url}";</script>',
-        height=0,
-    )
+    st.link_button("Continue to Microsoft sign-in →", res.url, type="primary")
+    st.info("Click the link above to finish signing in with Microsoft.")
     st.stop()
 
 
