@@ -572,17 +572,15 @@ def bse_run():
 
 
 # ============================================================ MAIN
-# ============================================================ MAIN
 st.title("Filing alerts")
 
-# --- Handle the ?code=... redirect (only relevant for the Alerts tab) ---
+# --- Handle the ?code=... redirect (Filing Alerts login) ---
 qp = st.query_params
 if "code" in qp:
     session = exchange_code(qp["code"])
     if session and session.get("user") and session.get("access_token"):
         st.session_state["email"] = (session["user"].get("email") or "").strip().lower()
         st.session_state["token"] = session["access_token"]
-        st.session_state["section"] = "Filing Alerts"   # land back on the Alerts tab
     else:
         st.error("Login failed during code exchange. Please try signing in again.")
     st.query_params.clear()
@@ -590,16 +588,15 @@ if "code" in qp:
 
 email = st.session_state.get("email")
 
-# --- Three tabs, always visible, no login to reach them ---
-section = st.radio("Section", ["NSE", "BSE", "Filing Alerts"],
-                   horizontal=True, label_visibility="collapsed", key="section")
+tab_nse, tab_bse, tab_alerts = st.tabs(["NSE", "BSE", "Filing Alerts"])
 
-if section == "NSE":
+with tab_nse:
     nse_run()
-elif section == "BSE":
+
+with tab_bse:
     bse_run()
-else:
-    # Filing Alerts — login required only here
+
+with tab_alerts:
     if not email:
         st.write("Sign in to manage your filing-alert subscriptions.")
         col1, col2 = st.columns(2)
