@@ -3,8 +3,8 @@ Subscribe page — Supabase-owned OAuth (Google + Microsoft, any account).
 PKCE code flow: Supabase returns ?code=..., exchanged for a session.
 Verified email drives subscriptions. Cap 60/email.
 
-NOTE: Google login works with this. Microsoft may hit a PKCE verifier
-mismatch on Streamlit (known fiddly edge) — Google-only is a fine interim.
+Login: only the clicked provider generates a PKCE verifier, so the two
+providers no longer clobber each other's verifier in the shared client.
 
 Run:  streamlit run subscribe.py
 Deps: streamlit, requests, supabase
@@ -121,12 +121,15 @@ def insert_subscription(email, c):
 
 
 # ==================== AUTH ====================
-def login_url(provider):
+def start_login(provider):
+    # Generate a verifier ONLY for the clicked provider, then redirect.
     res = supabase.auth.sign_in_with_oauth({
         "provider": provider,
         "options": {"redirect_to": APP_URL},
     })
-    return res.url
+    st.markdown(f'<meta http-equiv="refresh" content="0;url={res.url}">',
+                unsafe_allow_html=True)
+    st.stop()
 
 
 def logged_in_email():
@@ -158,10 +161,10 @@ email = logged_in_email()
 if not email:
     st.write("Sign in to manage your filing-alert subscriptions.")
     col1, col2 = st.columns(2)
-    with col1:
-        st.link_button("Sign in with Microsoft", login_url("azure"), type="primary")
-    with col2:
-        st.link_button("Sign in with Google", login_url("google"))
+    if col1.button("Sign in with Microsoft", type="primary"):
+        start_login("azure")
+    if col2.button("Sign in with Google"):
+        start_login("google")
     st.stop()
 
 # --- Logged in ---
