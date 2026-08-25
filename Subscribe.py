@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Filing alerts", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Filing Sentinel", page_icon="📊", layout="wide")
 
 # ============================================================ shared constants
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -572,7 +572,7 @@ def bse_run():
 
 
 # ============================================================ MAIN
-st.title("Filing alerts")
+st.title("Filings Sentinel")
 
 # --- Handle the ?code=... redirect (Filing Alerts login) ---
 qp = st.query_params
