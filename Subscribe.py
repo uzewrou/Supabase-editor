@@ -588,7 +588,7 @@ if "code" in qp:
 
 email = st.session_state.get("email")
 
-tab_nse, tab_bse, tab_alerts = st.tabs(["NSE", "BSE", "Filing Alerts"])
+tab_about, tab_nse, tab_bse, tab_alerts = st.tabs(["About", "NSE", "BSE", "Filing Alerts"])
 
 with tab_nse:
     nse_run()
@@ -610,3 +610,11 @@ with tab_alerts:
             st.session_state.pop("token", None)
             st.rerun()
         subscriptions_run(email)
+
+with tab_about:
+    st.subheader("About Filings Sentinel")
+    st.markdown(
+        "- **NSE** — live NIFTY 500 quarterly results & investor presentations, straight from NSE.\n"
+        "- **BSE** — quarterly results & presentations for any BSE-listed company.\n"
+        "- **Filing Alerts** — sign in to pick companies and get emailed when they file with BSE/NSE."
+    )
