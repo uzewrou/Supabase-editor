@@ -122,13 +122,14 @@ def insert_subscription(email, c):
 
 # ==================== AUTH ====================
 def start_login(provider):
-    # Generate a verifier ONLY for the clicked provider, then redirect.
     res = supabase.auth.sign_in_with_oauth({
         "provider": provider,
         "options": {"redirect_to": APP_URL},
     })
-    st.markdown(f'<meta http-equiv="refresh" content="0;url={res.url}">',
-                unsafe_allow_html=True)
+    st.markdown(
+        f'<script>window.top.location.href = "{res.url}";</script>',
+        unsafe_allow_html=True,
+    )
     st.stop()
 
 
