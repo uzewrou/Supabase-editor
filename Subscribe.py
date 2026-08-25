@@ -571,12 +571,6 @@ def bse_run():
         bse_render(ppt, "presentations")
 
 
-def filings_run():
-    exchange = st.radio("Exchange", ["NSE", "BSE"], horizontal=True,
-                        label_visibility="collapsed", key="exchange")
-    nse_run() if exchange == "NSE" else bse_run()
-
-
 # ============================================================ MAIN
 st.title("Filing alerts")
 
@@ -610,9 +604,11 @@ if c2.button("Log out"):
     st.session_state.pop("token", None)
     st.rerun()
 
-view = st.radio("View", ["My subscriptions", "Browse filings"],
-                horizontal=True, label_visibility="collapsed", key="view")
-if view == "My subscriptions":
-    subscriptions_run(email)
+section = st.radio("Section", ["NSE", "BSE", "Alerts"],
+                   horizontal=True, label_visibility="collapsed", key="section")
+if section == "NSE":
+    nse_run()
+elif section == "BSE":
+    bse_run()
 else:
-    filings_run()
+    subscriptions_run(email)
