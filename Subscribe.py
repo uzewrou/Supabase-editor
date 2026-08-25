@@ -1,7 +1,9 @@
 """
 Subscribe page — Supabase-owned OAuth (Google + Microsoft, any account).
-Uses the PKCE code flow: Supabase returns ?code=..., which we exchange for a
-session. Verified email drives subscriptions. Cap 60/email.
+Uses the IMPLICIT flow: Supabase returns tokens in the URL fragment
+(#access_token=...), which we grab with a little JS and set as the session.
+Avoids the PKCE code-verifier persistence problem on Streamlit.
+Verified email drives subscriptions. Cap 60/email.
 
 Run:  streamlit run subscribe.py
 Deps: streamlit, requests, supabase
@@ -11,6 +13,7 @@ import csv
 import requests
 import streamlit as st
 from supabase import create_client
+from supabase.lib.client_options import ClientOptions
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -22,14 +25,13 @@ APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
 MAX_PER_EMAIL = 60
 
 
-@st.cache_resource
-def get_supabase():
-    # One client per session so the PKCE code_verifier persists between the
-    # login redirect and the code exchange.
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def make_client():
+    # implicit flow => tokens come back in URL fragment, no PKCE verifier to lose.
+    return create_client(SUPABASE_URL, SUPABASE_KEY,
+                         options=ClientOptions(flow_type="implicit"))
 
 
-supabase = get_supabase()
+supabase = make_client()
 
 # ---------- BSE ----------
 BSE_H = {"User-Agent": UA, "Accept": "application/json",
@@ -126,30 +128,49 @@ def login_url(provider):
     return res.url
 
 
-def logged_in_email():
-    try:
-        session = supabase.auth.get_session()
-        if session and session.user:
-            return (session.user.email or "").strip().lower()
-    except Exception:
-        pass
-    return None
-
-
 st.title("Subscribe to filing alerts")
 
-# --- Handle the ?code=... redirect from Supabase (PKCE flow) ---
-qp = st.query_params
-if "code" in qp:
-    try:
-        supabase.auth.exchange_code_for_session({"auth_code": qp["code"]})
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"Login failed during code exchange: {e}")
-        st.query_params.clear()
+# --- Step 1: tokens arrive in the URL FRAGMENT (#access_token=...) which the
+# server can't read. This JS moves them into query params and reloads. ---
+st.markdown("""
+<script>
+const h = window.location.hash;
+if (h && h.includes("access_token")) {
+    const p = new URLSearchParams(h.substring(1));
+    const at = p.get("access_token");
+    const rt = p.get("refresh_token");
+    if (at) {
+        const u = new URL(window.location.href);
+        u.hash = "";
+        u.searchParams.set("at", at);
+        u.searchParams.set("rt", rt || "");
+        window.location.replace(u.toString());
+    }
+}
+</script>
+""", unsafe_allow_html=True)
 
-email = logged_in_email()
+# --- Step 2: if tokens are in query params, set the session and store it ---
+qp = st.query_params
+if "at" in qp and "sb_at" not in st.session_state:
+    try:
+        supabase.auth.set_session(qp["at"], qp.get("rt", ""))
+        st.session_state["sb_at"] = qp["at"]
+        st.session_state["sb_rt"] = qp.get("rt", "")
+    except Exception as e:
+        st.error(f"Login failed setting session: {e}")
+    st.query_params.clear()
+    st.rerun()
+
+# --- Step 3: resolve the logged-in email from the stored token ---
+email = None
+if "sb_at" in st.session_state:
+    try:
+        user = supabase.auth.get_user(st.session_state["sb_at"])
+        email = (user.user.email or "").strip().lower()
+    except Exception:
+        st.session_state.pop("sb_at", None)
+        st.session_state.pop("sb_rt", None)
 
 # --- Not logged in -> buttons ---
 if not email:
@@ -165,10 +186,8 @@ if not email:
 c1, c2 = st.columns([4, 1])
 c1.caption(f"Signed in as **{email}**")
 if c2.button("Log out"):
-    try:
-        supabase.auth.sign_out()
-    except Exception:
-        pass
+    for k in ("sb_at", "sb_rt"):
+        st.session_state.pop(k, None)
     st.rerun()
 
 # ==================== SUBSCRIBE UI ====================
