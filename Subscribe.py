@@ -224,10 +224,20 @@ def subscriptions_run(email):
     n = len(current)
     st.subheader(f"Your subscriptions — {n} / {MAX_PER_EMAIL}")
     if current:
+        name_by_key = {c["symbol"]: c["name"] for c in companies}
+        h = st.columns([3, 4, 2, 2, 1])
+        h[0].caption("**Ticker**")
+        h[1].caption("**Company**")
+        h[2].caption("**BSE**")
+        h[3].caption("**NSE**")
+        h[4].caption("")
         for row in current:
-            col_a, col_b = st.columns([6, 1])
-            col_a.write(f"{row['company_key']}  ·  BSE {row['bse_code']}  ·  NSE {row['nse_symbol']}")
-            if col_b.button("✕", key=f"del_{row['company_key']}"):
+            c = st.columns([3, 4, 2, 2, 1])
+            c[0].write(row["company_key"])
+            c[1].write(name_by_key.get(row["company_key"], "—"))
+            c[2].write(str(row["bse_code"]))
+            c[3].write(row["nse_symbol"])
+            if c[4].button("✕", key=f"del_{row['company_key']}"):
                 res = delete_subscription(email, row["company_key"])
                 if res == "deleted":
                     st.rerun()
@@ -235,24 +245,6 @@ def subscriptions_run(email):
                     st.error(res)
     else:
         st.caption("No subscriptions yet.")
-
-    if current:
-        drop = st.multiselect("Remove companies",
-                              [row["company_key"] for row in current],
-                              placeholder="Pick tickers to unsubscribe…")
-        if st.button("Remove", disabled=not drop):
-            removed, errors = [], []
-            for key in drop:
-                res = delete_subscription(email, key)
-                if res == "deleted":
-                    removed.append(key)
-                else:
-                    errors.append(f"{key}: {res}")
-            if removed:
-                st.success(f"Removed: {', '.join(removed)}")
-            if errors:
-                st.error("Errors:\n" + "\n".join(errors))
-            st.rerun()
 
     remaining = MAX_PER_EMAIL - n
     picks = st.multiselect("Add companies", list(by_label),
