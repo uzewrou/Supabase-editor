@@ -1,7 +1,7 @@
 """
-Subscribe page — Supabase-owned OAuth (Google + Microsoft, any account) on Streamlit.
-Users sign in via Supabase; the VERIFIED email from the Supabase session drives
-their subscriptions. Live matched BSE+NSE list (EQ, both exchanges). Cap 60/email.
+Subscribe page — Supabase-owned OAuth (Google + Microsoft, any account).
+Uses the PKCE code flow: Supabase returns ?code=..., which we exchange for a
+session. Verified email drives subscriptions. Cap 60/email.
 
 Run:  streamlit run subscribe.py
 Deps: streamlit, requests, supabase
@@ -21,7 +21,15 @@ SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
 APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
 MAX_PER_EMAIL = 60
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+@st.cache_resource
+def get_supabase():
+    # One client per session so the PKCE code_verifier persists between the
+    # login redirect and the code exchange.
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+supabase = get_supabase()
 
 # ---------- BSE ----------
 BSE_H = {"User-Agent": UA, "Accept": "application/json",
@@ -110,7 +118,7 @@ def insert_subscription(email, c):
 
 
 # ==================== AUTH ====================
-def get_login_url(provider):
+def login_url(provider):
     res = supabase.auth.sign_in_with_oauth({
         "provider": provider,
         "options": {"redirect_to": APP_URL},
@@ -118,73 +126,49 @@ def get_login_url(provider):
     return res.url
 
 
-def current_email():
-    """Return verified email if a valid session is in st.session_state, else None."""
-    tokens = st.session_state.get("sb_session")
-    if not tokens:
-        return None
+def logged_in_email():
     try:
-        user = supabase.auth.get_user(tokens["access_token"])
-        return (user.user.email or "").strip().lower()
+        session = supabase.auth.get_session()
+        if session and session.user:
+            return (session.user.email or "").strip().lower()
     except Exception:
-        st.session_state.pop("sb_session", None)
-        return None
+        pass
+    return None
 
 
 st.title("Subscribe to filing alerts")
 
-# ===== DEBUG =====
-st.write("DEBUG query_params:", dict(st.query_params))
-st.write("DEBUG has sb_session:", "sb_session" in st.session_state)
-if "sb_session" in st.session_state:
-    st.write("DEBUG session keys:", list(st.session_state["sb_session"].keys()))
-# ===== END DEBUG =====
-
-# --- Step 1: catch the token the browser has in the URL fragment (#access_token=...) ---
-# Supabase returns tokens in the URL fragment, which the server can't see.
-# This JS reads the fragment and reloads with the tokens as query params Streamlit CAN read.
-st.markdown("""
-<script>
-const h = window.location.hash;
-if (h && h.includes("access_token")) {
-    const p = new URLSearchParams(h.substring(1));
-    const at = p.get("access_token");
-    const rt = p.get("refresh_token");
-    if (at) {
-        const u = new URL(window.location.href);
-        u.hash = "";
-        u.searchParams.set("at", at);
-        u.searchParams.set("rt", rt || "");
-        window.location.replace(u.toString());
-    }
-}
-</script>
-""", unsafe_allow_html=True)
-
-# --- Step 2: if tokens arrived as query params, store them and clean the URL ---
+# --- Handle the ?code=... redirect from Supabase (PKCE flow) ---
 qp = st.query_params
-if "at" in qp and "sb_session" not in st.session_state:
-    st.session_state["sb_session"] = {"access_token": qp["at"], "refresh_token": qp.get("rt", "")}
-    st.query_params.clear()
-    st.rerun()
+if "code" in qp:
+    try:
+        supabase.auth.exchange_code_for_session({"auth_code": qp["code"]})
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        st.error(f"Login failed during code exchange: {e}")
+        st.query_params.clear()
 
-email = current_email()
+email = logged_in_email()
 
-# --- Step 3: not logged in -> show buttons ---
+# --- Not logged in -> buttons ---
 if not email:
     st.write("Sign in to manage your filing-alert subscriptions.")
     col1, col2 = st.columns(2)
     with col1:
-        st.link_button("Sign in with Microsoft", get_login_url("azure"), type="primary")
+        st.link_button("Sign in with Microsoft", login_url("azure"), type="primary")
     with col2:
-        st.link_button("Sign in with Google", get_login_url("google"))
+        st.link_button("Sign in with Google", login_url("google"))
     st.stop()
 
 # --- Logged in ---
 c1, c2 = st.columns([4, 1])
 c1.caption(f"Signed in as **{email}**")
 if c2.button("Log out"):
-    st.session_state.pop("sb_session", None)
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
     st.rerun()
 
 # ==================== SUBSCRIBE UI ====================
