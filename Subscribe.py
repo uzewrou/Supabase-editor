@@ -117,6 +117,15 @@ def insert_subscription(email, c):
     except Exception as e:
         return f"error: {e}"
 
+def delete_subscription(email, company_key):
+    url = f"{SUPABASE_URL}/rest/v1/subscriptions"
+    params = {"email": f"eq.{email}", "company_key": f"eq.{company_key}"}
+    try:
+        r = requests.delete(url, headers=user_headers(), params=params, timeout=20)
+        return "deleted" if r.status_code in (200, 204) else f"error {r.status_code}: {r.text[:120]}"
+    except Exception as e:
+        return f"error: {e}"
+
 
 # ==================== AUTH (manual PKCE, per-session identity) ====================
 @st.cache_resource
@@ -205,6 +214,24 @@ if current:
 else:
     st.caption("No subscriptions yet.")
 
+if current:
+    drop = st.multiselect("Remove companies",
+                          [row["company_key"] for row in current],
+                          placeholder="Pick tickers to unsubscribe…")
+    if st.button("Remove", disabled=not drop):
+        removed, errors = [], []
+        for key in drop:
+            res = delete_subscription(email, key)
+            if res == "deleted":
+                removed.append(key)
+            else:
+                errors.append(f"{key}: {res}")
+        if removed:
+            st.success(f"Removed: {', '.join(removed)}")
+        if errors:
+            st.error("Errors:\n" + "\n".join(errors))
+        st.rerun()
+      
 remaining = MAX_PER_EMAIL - n
 picks = st.multiselect("Add companies", list(by_label),
                        placeholder="Type a name or ticker…")
