@@ -1,14 +1,16 @@
 """
 Subscribe page — Supabase OAuth (Google + Microsoft, any account).
-Manual PKCE: we build the authorize URL + verifier ourselves, then exchange
-the returned ?code=... for a session over REST.
+Manual PKCE: build authorize URL + verifier ourselves, exchange ?code=... for a session.
 
-Identity lives in st.session_state (per browser session), NOT in the shared
-supabase client — so one user's login never shows up for another user.
+Security model:
+- Identity + access token live in st.session_state (per browser session).
+- Reads/writes go to PostgREST with the USER's access token, so RLS policies
+  (email-scoped) enforce that each user only sees/edits their own rows.
+- This app uses ONLY the anon key. The service_role key stays in bot.py.
 
 Run:  streamlit run subscribe.py
 Deps: streamlit, requests
-Secrets: SUPABASE_URL, SUPABASE_KEY
+Secrets: SUPABASE_URL, SUPABASE_ANON_KEY
 """
 import csv
 import base64
@@ -21,8 +23,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+ANON = st.secrets["SUPABASE_ANON_KEY"]
 APP_URL = "https://supabase-editor-xb3xzprepaltfjzplqo7ej.streamlit.app"
 MAX_PER_EMAIL = 60
 
@@ -82,12 +83,17 @@ def matched_companies():
     return out
 
 
+# ---------- per-user auth header (RLS enforced by user's JWT) ----------
+def user_headers():
+    return {"apikey": ANON, "Authorization": f"Bearer {st.session_state['token']}"}
+
+
 def get_subscriptions(email):
     url = f"{SUPABASE_URL}/rest/v1/subscriptions"
     params = {"select": "company_key,bse_code,nse_symbol",
               "email": f"eq.{email}", "order": "company_key.asc"}
     try:
-        r = requests.get(url, headers=SB_HEADERS, params=params, timeout=20)
+        r = requests.get(url, headers=user_headers(), params=params, timeout=20)
         r.raise_for_status()
         rows = r.json()
         return rows if isinstance(rows, list) else []
@@ -98,7 +104,7 @@ def get_subscriptions(email):
 
 def insert_subscription(email, c):
     url = f"{SUPABASE_URL}/rest/v1/subscriptions"
-    headers = {**SB_HEADERS, "Content-Type": "application/json", "Prefer": "return=minimal"}
+    headers = {**user_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"}
     payload = {"email": email, "company_key": c["symbol"],
                "bse_code": c["bse_code"], "nse_symbol": c["nse_symbol"]}
     try:
@@ -117,7 +123,6 @@ def insert_subscription(email, c):
 def _pkce_store():
     # Global, short-lived: holds only PKCE verifiers (not sessions) so they
     # survive the full-page OAuth redirect. Consumed + cleared on exchange.
-    # Never holds identity, so nothing here can leak between users.
     return {}
 
 
@@ -143,7 +148,7 @@ def exchange_code(code):
         try:
             r = requests.post(
                 f"{SUPABASE_URL}/auth/v1/token?grant_type=pkce",
-                headers={"apikey": SUPABASE_KEY, "Content-Type": "application/json"},
+                headers={"apikey": ANON, "Content-Type": "application/json"},
                 json={"auth_code": code, "code_verifier": verifier},
                 timeout=20,
             )
@@ -157,18 +162,19 @@ def exchange_code(code):
 
 st.title("Subscribe to filing alerts")
 
-# --- Handle the ?code=... redirect: exchange, stash identity per-session ---
+# --- Handle the ?code=... redirect: exchange, stash identity + token per-session ---
 qp = st.query_params
 if "code" in qp:
     session = exchange_code(qp["code"])
-    if session and session.get("user"):
+    if session and session.get("user") and session.get("access_token"):
         st.session_state["email"] = (session["user"].get("email") or "").strip().lower()
+        st.session_state["token"] = session["access_token"]
     else:
         st.error("Login failed during code exchange. Please try signing in again.")
     st.query_params.clear()
     st.rerun()
 
-# Identity comes ONLY from this browser's session_state — never the shared client.
+# Identity comes ONLY from this browser's session_state — never a shared client.
 email = st.session_state.get("email")
 
 # --- Not logged in -> one-click links (real anchors; work for both providers) ---
@@ -184,6 +190,7 @@ c1, c2 = st.columns([4, 1])
 c1.caption(f"Signed in as **{email}**")
 if c2.button("Log out"):
     st.session_state.pop("email", None)
+    st.session_state.pop("token", None)
     st.rerun()
 
 # ==================== SUBSCRIBE UI ====================
