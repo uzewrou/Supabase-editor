@@ -588,13 +588,7 @@ if "code" in qp:
 
 email = st.session_state.get("email")
 
-tab_about, tab_nse, tab_bse, tab_alerts = st.tabs(["About", "NSE", "BSE", "Filing Alerts"])
-
-with tab_nse:
-    nse_run()
-
-with tab_bse:
-    bse_run()
+tab_alerts, tab_nse, tab_bse, tab_about = st.tabs(["Filing Alerts", "NSE", "BSE", "About"])
 
 with tab_alerts:
     if not email:
@@ -610,6 +604,12 @@ with tab_alerts:
             st.session_state.pop("token", None)
             st.rerun()
         subscriptions_run(email)
+      
+with tab_nse:
+    nse_run()
+
+with tab_bse:
+    bse_run()
 
 with tab_about:
     st.subheader("About Filings Sentinel")
