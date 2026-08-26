@@ -427,7 +427,7 @@ def nse_run():
     lab = {(c["symbol"] if c["name"] == c["symbol"] else f"{c['symbol']} — {c['name']}"): c
            for c in companies}
 
-  st.markdown("""
+st.markdown("""
 <style>
   /* make the radio look like a tab strip */
   div[role="radiogroup"] { flex-direction: row; gap: 4px; border-bottom: 1px solid rgba(128,128,128,.25); }
