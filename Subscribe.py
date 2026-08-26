@@ -427,17 +427,17 @@ def nse_run():
     lab = {(c["symbol"] if c["name"] == c["symbol"] else f"{c['symbol']} — {c['name']}"): c
            for c in companies}
 
-st.markdown("""
-<style>
-  /* make the radio look like a tab strip */
-  div[role="radiogroup"] { flex-direction: row; gap: 4px; border-bottom: 1px solid rgba(128,128,128,.25); }
-  div[role="radiogroup"] > label { margin: 0; padding: 8px 16px; cursor: pointer;
-                                    border-bottom: 2px solid transparent; }
-  div[role="radiogroup"] > label > div:first-child { display: none; }   /* hide the dot */
-  div[role="radiogroup"] > label:has(input:checked) { border-bottom: 2px solid #ff4b4b; }
-  div[role="radiogroup"] > label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
-</style>
-""", unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+      /* make the radio look like a tab strip */
+      div[role="radiogroup"] { flex-direction: row; gap: 4px; border-bottom: 1px solid rgba(128,128,128,.25); }
+      div[role="radiogroup"] > label { margin: 0; padding: 8px 16px; cursor: pointer;
+                                        border-bottom: 2px solid transparent; }
+      div[role="radiogroup"] > label > div:first-child { display: none; }   /* hide the dot */
+      div[role="radiogroup"] > label:has(input:checked) { border-bottom: 2px solid #ff4b4b; }
+      div[role="radiogroup"] > label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
+    </style>
+    """, unsafe_allow_html=True)
 
     choice = st.selectbox("Company", list(lab), index=None,
                           placeholder="Search a company…", label_visibility="collapsed", key="nse_co")
