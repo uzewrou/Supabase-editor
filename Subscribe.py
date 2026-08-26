@@ -590,6 +590,12 @@ email = st.session_state.get("email")
 
 tab_alerts, tab_nse, tab_bse, tab_about = st.tabs(["Filing Alerts", "NSE", "BSE", "About"])
 
+with tab_nse:
+    nse_run()
+
+with tab_bse:
+    bse_run()
+  
 with tab_alerts:
     if not email:
         st.write("Sign in to manage your filing-alert subscriptions.")
@@ -605,11 +611,6 @@ with tab_alerts:
             st.rerun()
         subscriptions_run(email)
       
-with tab_nse:
-    nse_run()
-
-with tab_bse:
-    bse_run()
 
 with tab_about:
     st.subheader("About Filings Sentinel")
