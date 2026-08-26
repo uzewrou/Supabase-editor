@@ -581,6 +581,7 @@ if "code" in qp:
     if session and session.get("user") and session.get("access_token"):
         st.session_state["email"] = (session["user"].get("email") or "").strip().lower()
         st.session_state["token"] = session["access_token"]
+        st.session_state["goto_alerts"] = True
     else:
         st.error("Login failed during code exchange. Please try signing in again.")
     st.query_params.clear()
@@ -588,15 +589,32 @@ if "code" in qp:
 
 email = st.session_state.get("email")
 
-tab_about, tab_nse, tab_bse, tab_alerts = st.tabs(["About", "NSE", "BSE", "Filing Alerts"])
+sections = ["About", "NSE", "BSE", "Filing Alerts"]
 
-with tab_nse:
+# Land on Filing Alerts right after a fresh login; About by default otherwise.
+if st.session_state.pop("goto_alerts", False):
+    st.session_state["section"] = "Filing Alerts"
+
+default = "Filing Alerts" if email else "About"
+if "section" not in st.session_state:
+    st.session_state["section"] = default
+
+choice = st.radio("Section", sections,
+                  index=sections.index(st.session_state["section"]),
+                  horizontal=True, label_visibility="collapsed", key="section")
+
+if choice == "About":
+    st.subheader("About Filings Sentinel")
+    st.markdown(
+        "- **Filing Alerts** — sign in to pick companies and get emailed when they file with BSE/NSE.\n"
+        "- **NSE** — live NIFTY 500 quarterly results & investor presentations, straight from NSE.\n"
+        "- **BSE** — quarterly results & presentations for any BSE-listed company."
+    )
+elif choice == "NSE":
     nse_run()
-
-with tab_bse:
+elif choice == "BSE":
     bse_run()
-  
-with tab_alerts:
+else:  # Filing Alerts
     if not email:
         st.write("Sign in to manage your filing-alert subscriptions.")
         col1, col2 = st.columns(2)
@@ -606,16 +624,7 @@ with tab_alerts:
         c1, c2 = st.columns([4, 1])
         c1.caption(f"Signed in as **{email}**")
         if c2.button("Log out"):
-            st.session_state.pop("email", None)
-            st.session_state.pop("token", None)
+            for k in ("email", "token", "section"):
+                st.session_state.pop(k, None)
             st.rerun()
         subscriptions_run(email)
-      
-
-with tab_about:
-    st.subheader("About Filings Sentinel")
-    st.markdown(
-        "- **NSE** — live NIFTY 500 quarterly results & investor presentations, straight from NSE.\n"
-        "- **BSE** — quarterly results & presentations for any BSE-listed company.\n"
-        "- **Filing Alerts** — sign in to pick companies and get emailed when they file with BSE/NSE."
-    )
