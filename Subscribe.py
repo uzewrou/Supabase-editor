@@ -588,7 +588,7 @@ if "code" in qp:
 
 email = st.session_state.get("email")
 
-tab_alerts, tab_nse, tab_bse, tab_about = st.tabs(["Filing Alerts", "NSE", "BSE", "About"])
+tab_about, tab_nse, tab_bse, tab_alerts = st.tabs(["About", "NSE", "BSE", "Filing Alerts"])
 
 with tab_nse:
     nse_run()
