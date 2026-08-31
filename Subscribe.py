@@ -13,20 +13,6 @@ Run:  streamlit run subscribe.py
 Deps: streamlit, requests
 Secrets: SUPABASE_URL, SUPABASE_ANON_KEY
 """
-st.set_page_config(page_title="Filings Sentinel", ...)
-
-st.markdown("""
-<style>
-#MainMenu {visibility: hidden;}
-header {visibility: hidden;}
-footer {visibility: hidden;}
-.stAppDeployButton {display: none;}
-[data-testid="stToolbar"] {display: none;}
-[data-testid="stDecoration"] {display: none;}
-[data-testid="stStatusWidget"] {display: none;}
-</style>
-""", unsafe_allow_html=True)
-
 # ... rest of your app
 import re
 import csv
@@ -41,6 +27,19 @@ import requests
 import streamlit as st
 
 st.set_page_config(page_title="Filing Sentinel", page_icon="📊", layout="wide")
+
+
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+header {visibility: hidden;}
+footer {visibility: hidden;}
+.stAppDeployButton {display: none;}
+[data-testid="stToolbar"] {display: none;}
+[data-testid="stDecoration"] {display: none;}
+[data-testid="stStatusWidget"] {display: none;}
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================ shared constants
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
