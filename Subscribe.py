@@ -13,6 +13,21 @@ Run:  streamlit run subscribe.py
 Deps: streamlit, requests
 Secrets: SUPABASE_URL, SUPABASE_ANON_KEY
 """
+st.set_page_config(page_title="Filings Sentinel", ...)
+
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+header {visibility: hidden;}
+footer {visibility: hidden;}
+.stAppDeployButton {display: none;}
+[data-testid="stToolbar"] {display: none;}
+[data-testid="stDecoration"] {display: none;}
+[data-testid="stStatusWidget"] {display: none;}
+</style>
+""", unsafe_allow_html=True)
+
+# ... rest of your app
 import re
 import csv
 import html
