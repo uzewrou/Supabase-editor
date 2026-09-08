@@ -38,8 +38,11 @@ footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
 [data-testid="stDecoration"] {display: none;}
 [data-testid="stStatusWidget"] {display: none;}
+[data-testid="stSelectboxVirtualDropdown"] li:first-child:has([data-testid="stMultiSelectSelectAll"]),
+[data-baseweb="menu"] [role="option"]:first-child:has(span:only-child) {display:none;}
 </style>
 """, unsafe_allow_html=True)
+
 
 # ============================================================ shared constants
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
