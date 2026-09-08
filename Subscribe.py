@@ -264,7 +264,7 @@ def subscriptions_run(email):
     remaining = MAX_PER_EMAIL - n
     picks = st.multiselect("Add companies", list(by_label),
                            placeholder="Type a name or ticker…",
-                           select_all=0)
+                           select_all=False)
 
     over = len(picks) > remaining
     if over:
