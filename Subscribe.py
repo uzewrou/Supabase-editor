@@ -38,8 +38,6 @@ footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
 [data-testid="stDecoration"] {display: none;}
 [data-testid="stStatusWidget"] {display: none;}
-[data-testid="stSelectboxVirtualDropdown"] li:first-child:has([data-testid="stMultiSelectSelectAll"]),
-[data-baseweb="menu"] [role="option"]:first-child:has(span:only-child) {display:none;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -265,7 +263,8 @@ def subscriptions_run(email):
 
     remaining = MAX_PER_EMAIL - n
     picks = st.multiselect("Add companies", list(by_label),
-                           placeholder="Type a name or ticker…")
+                           placeholder="Type a name or ticker…",
+                           select_all=0)
 
     over = len(picks) > remaining
     if over:
