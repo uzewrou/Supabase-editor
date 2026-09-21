@@ -103,7 +103,7 @@ def qsort_key(q):
 @st.cache_data(ttl=86400, show_spinner=False)
 def bse_by_symbol():
     params = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
-    rows = requests.get(BSE_SCRIP, headers=BSE_H, params=params, timeout=25).json()
+    rows = bse_get(BSE_SCRIP, params)
     out = {}
     for x in rows:
         sym = (x.get("scrip_id") or "").strip().upper()
@@ -482,7 +482,7 @@ BSE_MONTH_Q = {7: ("Q1", 1), 8: ("Q1", 1), 9: ("Q1", 1), 10: ("Q2", 1), 11: ("Q2
 @st.cache_data(ttl=86400, show_spinner="Loading BSE company list…")
 def bse_companies():
     params = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
-    rows = requests.get(BSE_SCRIP, headers=BSE_H, params=params, timeout=25).json()
+    rows = bse_get(BSE_SCRIP, params)
     out = [{"code": str(r["SCRIP_CD"]), "symbol": r.get("scrip_id") or "",
             "name": r.get("Scrip_Name") or r.get("Issuer_Name") or ""} for r in rows]
     out.sort(key=lambda c: c["name"].lower())
@@ -523,7 +523,7 @@ def bse_fetch(code, n_years, cat, subcat):
     params = {"pageno": 1, "strCat": cat, "subcategory": subcat,
               "strPrevDate": frm.strftime("%Y%m%d"), "strToDate": to.strftime("%Y%m%d"),
               "strScrip": code, "strSearch": "P", "strType": "C"}
-    data = requests.get(BSE_ANN, headers=BSE_H, params=params, timeout=30).json()
+    data = bse_get(BSE_ANN, params)
     table = data.get("Table", []) if isinstance(data, dict) else []
     buckets = {}
     for r in table:
