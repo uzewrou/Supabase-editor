@@ -1,32 +1,3 @@
-"""
-Filing alerts — subscription page + NSE/BSE filings browser (single file).
-
-After login, a toggle switches between:
-  • My subscriptions — pick/drop companies for the alert bot (Supabase, RLS-scoped)
-  • Browse filings   — live NSE/BSE quarterly results & investor presentations
-
-Security: identity + access token live in st.session_state (per browser).
-Reads/writes use the user's JWT so RLS enforces per-user rows.
-This app uses ONLY the anon key. The service_role key stays in bot.py.
-
-Run:  streamlit run subscribe.py
-Deps: streamlit, requests
-Secrets: SUPABASE_URL, SUPABASE_ANON_KEY
-"""
-
-st.set_page_config(page_title="Filings Sentinel", ...)
-
-st.markdown("""
-<style>
-#MainMenu {visibility: hidden;}
-header {visibility: hidden;}
-footer {visibility: hidden;}
-.stAppDeployButton {display: none;}
-[data-testid="stToolbar"] {display: none;}
-[data-testid="stDecoration"] {display: none;}
-[data-testid="stStatusWidget"] {display: none;}
-</style>
-""", unsafe_allow_html=True)
 
 # ... rest of your app
 import re
