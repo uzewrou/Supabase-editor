@@ -1,4 +1,18 @@
+"""
+Filing alerts — subscription page + NSE/BSE filings browser (single file).
 
+After login, a toggle switches between:
+  • My subscriptions — pick/drop companies for the alert bot (Supabase, RLS-scoped)
+  • Browse filings   — live NSE/BSE quarterly results & investor presentations
+
+Security: identity + access token live in st.session_state (per browser).
+Reads/writes use the user's JWT so RLS enforces per-user rows.
+This app uses ONLY the anon key. The service_role key stays in bot.py.
+
+Run:  streamlit run subscribe.py
+Deps: streamlit, requests
+Secrets: SUPABASE_URL, SUPABASE_ANON_KEY
+"""
 # ... rest of your app
 import re
 import csv
@@ -14,13 +28,27 @@ import streamlit as st
 
 st.set_page_config(page_title="Filing Sentinel", page_icon="📊", layout="wide")
 
+
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+header {visibility: hidden;}
+footer {visibility: hidden;}
+.stAppDeployButton {display: none;}
+[data-testid="stToolbar"] {display: none;}
+[data-testid="stDecoration"] {display: none;}
+[data-testid="stStatusWidget"] {display: none;}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ============================================================ shared constants
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
 ANON = st.secrets["SUPABASE_ANON_KEY"]
-APP_URL = "https://filings-sentinel.streamlit.app"
+APP_URL = "https://filings-sentinel-uom9qn5uniaerksz5cjv3v.streamlit.app/"
 MAX_PER_EMAIL = 60
 
 NSE = "https://www.nseindia.com"
@@ -74,7 +102,7 @@ def qsort_key(q):
 @st.cache_data(ttl=86400, show_spinner=False)
 def bse_by_symbol():
     params = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
-    rows = bse_get(BSE_SCRIP, params)
+    rows = requests.get(BSE_SCRIP, headers=BSE_H, params=params, timeout=25).json()
     out = {}
     for x in rows:
         sym = (x.get("scrip_id") or "").strip().upper()
@@ -211,31 +239,32 @@ def subscriptions_run(email):
     n = len(current)
     st.subheader(f"Your subscriptions — {n} / {MAX_PER_EMAIL}")
     if current:
-        st.dataframe(current, width="stretch", hide_index=True)
+        name_by_key = {c["symbol"]: c["name"] for c in companies}
+        h = st.columns([3, 4, 2, 2, 1])
+        h[0].caption("**Ticker**")
+        h[1].caption("**Company**")
+        h[2].caption("**BSE**")
+        h[3].caption("**NSE**")
+        h[4].caption("")
+        for row in current:
+            c = st.columns([3, 4, 2, 2, 1])
+            c[0].write(row["company_key"])
+            c[1].write(name_by_key.get(row["company_key"], "—"))
+            c[2].write(str(row["bse_code"]))
+            c[3].write(row["nse_symbol"])
+            if c[4].button("✕", key=f"del_{row['company_key']}"):
+                res = delete_subscription(email, row["company_key"])
+                if res == "deleted":
+                    st.rerun()
+                else:
+                    st.error(res)
     else:
         st.caption("No subscriptions yet.")
 
-    if current:
-        drop = st.multiselect("Remove companies",
-                              [row["company_key"] for row in current],
-                              placeholder="Pick tickers to unsubscribe…")
-        if st.button("Remove", disabled=not drop):
-            removed, errors = [], []
-            for key in drop:
-                res = delete_subscription(email, key)
-                if res == "deleted":
-                    removed.append(key)
-                else:
-                    errors.append(f"{key}: {res}")
-            if removed:
-                st.success(f"Removed: {', '.join(removed)}")
-            if errors:
-                st.error("Errors:\n" + "\n".join(errors))
-            st.rerun()
-
     remaining = MAX_PER_EMAIL - n
     picks = st.multiselect("Add companies", list(by_label),
-                           placeholder="Type a name or ticker…")
+                           placeholder="Type a name or ticker…",
+                           select_all=False)
 
     over = len(picks) > remaining
     if over:
@@ -453,7 +482,7 @@ BSE_MONTH_Q = {7: ("Q1", 1), 8: ("Q1", 1), 9: ("Q1", 1), 10: ("Q2", 1), 11: ("Q2
 @st.cache_data(ttl=86400, show_spinner="Loading BSE company list…")
 def bse_companies():
     params = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
-    rows = bse_get(BSE_SCRIP, params)
+    rows = requests.get(BSE_SCRIP, headers=BSE_H, params=params, timeout=25).json()
     out = [{"code": str(r["SCRIP_CD"]), "symbol": r.get("scrip_id") or "",
             "name": r.get("Scrip_Name") or r.get("Issuer_Name") or ""} for r in rows]
     out.sort(key=lambda c: c["name"].lower())
@@ -494,7 +523,7 @@ def bse_fetch(code, n_years, cat, subcat):
     params = {"pageno": 1, "strCat": cat, "subcategory": subcat,
               "strPrevDate": frm.strftime("%Y%m%d"), "strToDate": to.strftime("%Y%m%d"),
               "strScrip": code, "strSearch": "P", "strType": "C"}
-    data = bse_get(BSE_ANN, params)
+    data = requests.get(BSE_ANN, headers=BSE_H, params=params, timeout=30).json()
     table = data.get("Table", []) if isinstance(data, dict) else []
     buckets = {}
     for r in table:
@@ -568,6 +597,7 @@ if "code" in qp:
     if session and session.get("user") and session.get("access_token"):
         st.session_state["email"] = (session["user"].get("email") or "").strip().lower()
         st.session_state["token"] = session["access_token"]
+        st.session_state["goto_alerts"] = True
     else:
         st.error("Login failed during code exchange. Please try signing in again.")
     st.query_params.clear()
@@ -575,15 +605,32 @@ if "code" in qp:
 
 email = st.session_state.get("email")
 
-tab_nse, tab_bse, tab_alerts = st.tabs(["NSE", "BSE", "Filing Alerts"])
+sections = ["About", "NSE", "BSE", "Filing Alerts"]
 
-with tab_nse:
+# Land on Filing Alerts right after a fresh login; About by default otherwise.
+if st.session_state.pop("goto_alerts", False):
+    st.session_state["section"] = "Filing Alerts"
+
+default = "Filing Alerts" if email else "About"
+if "section" not in st.session_state:
+    st.session_state["section"] = default
+
+choice = st.radio("Section", sections,
+                  index=sections.index(st.session_state["section"]),
+                  horizontal=True, label_visibility="collapsed", key="section")
+
+if choice == "About":
+    st.subheader("About Filings Sentinel")
+    st.markdown(
+        "- **Filing Alerts** — sign in to pick companies and get emailed when they file with BSE/NSE.\n"
+        "- **NSE** — live NIFTY 500 quarterly results & investor presentations, straight from NSE.\n"
+        "- **BSE** — quarterly results & presentations for any BSE-listed company."
+    )
+elif choice == "NSE":
     nse_run()
-
-with tab_bse:
+elif choice == "BSE":
     bse_run()
-
-with tab_alerts:
+else:  # Filing Alerts
     if not email:
         st.write("Sign in to manage your filing-alert subscriptions.")
         col1, col2 = st.columns(2)
@@ -593,7 +640,7 @@ with tab_alerts:
         c1, c2 = st.columns([4, 1])
         c1.caption(f"Signed in as **{email}**")
         if c2.button("Log out"):
-            st.session_state.pop("email", None)
-            st.session_state.pop("token", None)
+            for k in ("email", "token", "section"):
+                st.session_state.pop(k, None)
             st.rerun()
         subscriptions_run(email)
