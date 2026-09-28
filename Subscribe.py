@@ -295,8 +295,9 @@ def subscriptions_run(email):
         if dupes:
             st.info(f"Already subscribed (skipped): {', '.join(dupes)}")
         if errors:
-            st.error("Errors:\n" + "\n".join(errors))
-        st.rerun()
+            st.error("Errors:\n" + "\n".join(errors))  # stay on page so the error is visible
+        else:
+            st.rerun()
 
     st.caption(f"{len(companies)} companies available (NSE).")
 
