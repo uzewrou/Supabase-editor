@@ -104,155 +104,49 @@ def qsort_key(q):
     return (int(m.group(1)), int(m.group(2)))
 
 
-# ============================================================ error-aware fetching
-class LoadError(Exception):
-    """Raised with a human-readable reason. Streamlit never caches exceptions,
-    so a failure is retried on the next run instead of sticking for 24h."""
-
-
-HTTP_HINTS = {
-    401: "unauthorised",
-    403: "blocked — NSE/BSE usually block cloud / non-Indian IPs (Streamlit Cloud runs in the US)",
-    404: "not found — the endpoint URL may have changed",
-    429: "rate-limited — too many requests, wait a minute and retry",
-}
-
-
-def get_checked(url, what, kind, session=None, timeout=25, **kw):
-    """GET url and return parsed JSON or text, or raise LoadError saying exactly what went wrong."""
+# ==================== company lists (live, else local backup file) ====================
+def fetch_list(url, backup, session=None, **kw):
+    """Download a list; save it as backup on success, use the backup on failure."""
     try:
-        r = (session or requests).get(url, timeout=timeout, **kw)
-    except requests.Timeout:
-        raise LoadError(f"{what}: timed out after {timeout}s — the server didn't answer "
-                        f"(often a silent block on cloud IPs).")
-    except requests.ConnectionError as e:
-        raise LoadError(f"{what}: couldn't connect ({type(e).__name__}) — network/DNS problem or host down.")
-    if r.status_code != 200:
-        hint = HTTP_HINTS.get(r.status_code, "server error on their side" if r.status_code >= 500
-                              else "unexpected response")
-        raise LoadError(f"{what}: HTTP {r.status_code} — {hint}.")
-    body = r.text.lstrip()
-    if not body:
-        raise LoadError(f"{what}: empty response (HTTP 200 but no content).")
-    if body[:1] == "<":
-        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()[:150]
-        raise LoadError(f"{what}: got a web page instead of {kind} — likely a block/captcha page. "
-                        f"Page says: \"{text}\"")
-    if kind == "JSON":
-        try:
-            return r.json()
-        except ValueError:
-            raise LoadError(f"{what}: response isn't valid JSON. Starts with: {body[:100]!r}")
-    return r.text
+        r = (session or requests).get(url, timeout=25, **kw)
+        r.raise_for_status()
+        if r.text.lstrip().startswith("<"):
+            raise ValueError("got a block page instead of data")
+        with open(backup, "w", encoding="utf-8") as f:
+            f.write(r.text)
+        return r.text
+    except Exception as e:
+        if os.path.exists(backup):
+            with open(backup, encoding="utf-8") as f:
+                return f.read()
+        raise RuntimeError(f"{e} (no {os.path.basename(backup)} backup to fall back on)")
 
 
-def parse_nse_equity(text, what):
-    rows = list(csv.DictReader(text.splitlines()))
-    if not rows:
-        raise LoadError(f"{what}: CSV has no data rows.")
-    cols = [(k or "").strip() for k in rows[0]]
-    if "SYMBOL" not in cols or "SERIES" not in cols:
-        raise LoadError(f"{what}: CSV format changed — expected SYMBOL and SERIES columns, got {cols[:8]}.")
-    out = {}
-    for row in rows:
-        row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
-        if row["SYMBOL"] and row["SERIES"] == "EQ":
-            out[row["SYMBOL"].upper()] = row.get("NAME OF COMPANY", "")
-    if not out:
-        raise LoadError(f"{what}: {len(rows)} rows but none in the EQ series.")
-    return out
-
-
-def check_bse_rows(rows, what):
-    if not isinstance(rows, list):
-        raise LoadError(f"{what}: expected a list of companies, got {type(rows).__name__}: {str(rows)[:100]}")
-    if not rows:
-        raise LoadError(f"{what}: BSE returned an empty list.")
-    if not any(isinstance(x, dict) and x.get("SCRIP_CD") for x in rows):
-        keys = list(rows[0])[:8] if isinstance(rows[0], dict) else rows[0]
-        raise LoadError(f"{what}: {len(rows)} rows but no SCRIP_CD field — format changed? First row: {keys}")
-    return rows
-
-
-def with_backup(live, path, load_backup):
-    """Try live(); on LoadError fall back to a local file. Returns (data, live_error_or_None)."""
-    try:
-        return live(), None
-    except LoadError as e:
-        live_err = str(e)
-    name = os.path.basename(path)
-    if not os.path.exists(path):
-        raise LoadError(f"{live_err}\n\nNo backup file `{name}` in the app folder to fall back on.")
-    try:
-        return load_backup(), live_err
-    except LoadError as e:
-        raise LoadError(f"{live_err}\n\nBackup `{name}` also failed: {e}")
-    except (OSError, ValueError) as e:
-        raise LoadError(f"{live_err}\n\nBackup `{name}` unreadable: {type(e).__name__}: {e}")
-
-
-# ==================== company lists (shared by all views) ====================
 @st.cache_data(ttl=86400, show_spinner=False)
 def bse_rows():
-    def live():
-        rows = check_bse_rows(get_checked(BSE_SCRIP, "BSE company list", "JSON",
-                                          headers=BSE_H, params=BSE_SCRIP_PARAMS), "BSE company list")
-        try:
-            with open(BSE_BACKUP, "w") as f:
-                json.dump(rows, f)
-        except OSError:
-            pass
-        return rows
-
-    def backup():
-        with open(BSE_BACKUP) as f:
-            return check_bse_rows(json.load(f), "BSE backup")
-
-    return with_backup(live, BSE_BACKUP, backup)
+    return json.loads(fetch_list(BSE_SCRIP, BSE_BACKUP, headers=BSE_H, params=BSE_SCRIP_PARAMS))
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def nse_by_symbol():
-    def live():
-        text = get_checked(NSE_CSV, "NSE company list", "CSV", session=nse_session())
-        return parse_nse_equity(text, "NSE company list")
-
-    def backup():
-        with open(NSE_BACKUP, encoding="utf-8") as f:
-            return parse_nse_equity(f.read(), "NSE backup")
-
-    return with_backup(live, NSE_BACKUP, backup)
-
-
-def bse_by_symbol():
-    rows, note = bse_rows()
+    text = fetch_list(NSE_CSV, NSE_BACKUP, session=nse_session())
     out = {}
-    for x in rows:
-        sym = (x.get("scrip_id") or "").strip().upper()
-        if sym and x.get("SCRIP_CD"):
-            out[sym] = {"code": str(x["SCRIP_CD"]),
-                        "name": x.get("Scrip_Name") or x.get("Issuer_Name") or ""}
-    if not out:
-        raise LoadError(f"BSE company list: {len(rows)} rows but none have a scrip_id (ticker).")
-    return out, note
+    for row in csv.DictReader(text.splitlines()):
+        row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+        if row.get("SYMBOL") and row.get("SERIES") == "EQ":
+            out[row["SYMBOL"].upper()] = row.get("NAME OF COMPANY", "")
+    return out
 
 
 @st.cache_data(ttl=86400, show_spinner="Loading company list…")
 def matched_companies():
-    (bse, bse_note), (nse, nse_note) = bse_by_symbol(), nse_by_symbol()
-    out = [{"symbol": sym, "name": bse[sym]["name"], "bse_code": bse[sym]["code"], "nse_symbol": sym}
-           for sym in set(bse) & set(nse)]
+    # NSE only for now (BSE removed to test NSE on its own)
+    out = [{"symbol": s, "name": n, "bse_code": None, "nse_symbol": s}
+           for s, n in nse_by_symbol().items()]
     if not out:
-        raise LoadError(f"Loaded {len(bse)} BSE and {len(nse)} NSE tickers but none match — "
-                        f"one list is probably in a different ticker format.")
+        raise RuntimeError("NSE list downloaded but had no EQ companies in it")
     out.sort(key=lambda c: c["name"].lower())
-    notes = [f"{ex}: {n}" for ex, n in (("BSE", bse_note), ("NSE", nse_note)) if n]
-    return out, notes
-
-
-def show_backup_notes(notes):
-    for n in notes:
-        st.warning(f"Live list failed, using the backup file instead.\n\n{n}")
+    return out
 
 
 # ---------- per-user auth header (RLS enforced by user's JWT) ----------
@@ -343,13 +237,10 @@ def exchange_code(code):
 # ==================== SUBSCRIPTIONS VIEW ====================
 def subscriptions_run(email):
     try:
-        companies, notes = matched_companies()
-        show_backup_notes(notes)
-    except LoadError as e:
+        companies = matched_companies()
+    except Exception as e:
         companies = []
-        st.error(f"Couldn't load the company list.\n\n{e}")
-        if st.button("Retry"):
-            st.rerun()
+        st.error(f"Couldn't load company list: {e}")
     by_label = {f"{c['symbol']} — {c['name']}": c for c in companies}
 
     current = get_subscriptions(email)
@@ -367,7 +258,7 @@ def subscriptions_run(email):
             c = st.columns([3, 4, 2, 2, 1])
             c[0].write(row["company_key"])
             c[1].write(name_by_key.get(row["company_key"], "—"))
-            c[2].write(str(row["bse_code"]))
+            c[2].write(str(row["bse_code"] or "—"))
             c[3].write(row["nse_symbol"])
             if c[4].button("✕", key=f"del_{row['company_key']}"):
                 res = delete_subscription(email, row["company_key"])
@@ -380,7 +271,7 @@ def subscriptions_run(email):
 
     remaining = MAX_PER_EMAIL - n
     picks = st.multiselect("Add companies", list(by_label),
-                           placeholder="Type a name or ticker…" if companies else "Company list unavailable",
+                           placeholder="Type a name or ticker…",
                            disabled=not companies, select_all=False)
 
     over = len(picks) > remaining
@@ -407,8 +298,7 @@ def subscriptions_run(email):
             st.error("Errors:\n" + "\n".join(errors))
         st.rerun()
 
-    if companies:
-        st.caption(f"{len(companies)} companies available (listed on both BSE & NSE).")
+    st.caption(f"{len(companies)} companies available (NSE).")
 
 
 # ============================================================ FILINGS: NSE
@@ -447,16 +337,13 @@ def nse_names():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def nse_companies():
-    what = "NSE NIFTY 500 list"
     s = nse_session()
     s.headers["Referer"] = NSE + "/market-data/live-equity-market"
-    data = get_checked(NSE + "/api/equity-stock-indices?index=NIFTY%20500", what, "JSON", session=s)
-    rows = data.get("data") if isinstance(data, dict) else None
-    if not rows:
-        raise LoadError(f"{what}: response has no 'data' list — format changed? Got: {str(data)[:100]}")
+    r = s.get(NSE + "/api/equity-stock-indices?index=NIFTY%20500", timeout=25)
+    r.raise_for_status()
     names = nse_names()
     out = [{"symbol": row["symbol"], "name": names.get(row["symbol"]) or row["symbol"]}
-           for row in rows if row.get("symbol") and not row["symbol"].upper().startswith("NIFTY")]
+           for row in r.json()["data"] if not row["symbol"].upper().startswith("NIFTY")]
     out.sort(key=lambda c: c["symbol"])
     return out
 
@@ -557,8 +444,8 @@ def nse_run():
                 '<div class="sub">NIFTY 500 · links only · live from NSE</div>', unsafe_allow_html=True)
     try:
         companies = nse_companies()
-    except LoadError as e:
-        st.error(f"Couldn't load the NSE company list.\n\n{e}")
+    except Exception as e:
+        st.error(f"Couldn't load NSE company list: {e}")
         return
     lab = {(c["symbol"] if c["name"] == c["symbol"] else f"{c['symbol']} — {c['name']}"): c
            for c in companies}
@@ -600,11 +487,10 @@ BSE_MONTH_Q = {7: ("Q1", 1), 8: ("Q1", 1), 9: ("Q1", 1), 10: ("Q2", 1), 11: ("Q2
 
 
 def bse_companies():
-    rows, note = bse_rows()
     out = [{"code": str(r["SCRIP_CD"]), "symbol": r.get("scrip_id") or "",
-            "name": r.get("Scrip_Name") or r.get("Issuer_Name") or ""} for r in rows if r.get("SCRIP_CD")]
+            "name": r.get("Scrip_Name") or r.get("Issuer_Name") or ""} for r in bse_rows()]
     out.sort(key=lambda c: c["name"].lower())
-    return out, note
+    return out
 
 
 def bse_dt(row):
@@ -678,13 +564,10 @@ def bse_run():
                 '<div class="sub">Any listed company · links only · live from BSE</div>',
                 unsafe_allow_html=True)
     try:
-        with st.spinner("Loading BSE company list…"):
-            companies, note = bse_companies()
-    except LoadError as e:
-        st.error(f"Couldn't load the BSE company list.\n\n{e}")
+        companies = bse_companies()
+    except Exception as e:
+        st.error(f"Couldn't load BSE company list: {e}")
         return
-    if note:
-        show_backup_notes([f"BSE: {note}"])
     lab = {f"{c['symbol'] or c['code']} — {c['name']} ({c['code']})": c for c in companies}
     choice = st.selectbox("Company", list(lab), index=None,
                           placeholder="Type a name, ticker, or code…",
