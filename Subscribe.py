@@ -20,6 +20,7 @@ import html
 import base64
 import hashlib
 import secrets
+import json, os
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
 
@@ -96,13 +97,28 @@ def qsort_key(q):
         return (-1, 0)
     m = re.match(r"FY(\d+)\s+Q(\d)", q)
     return (int(m.group(1)), int(m.group(2)))
+  
+BSE_CACHE = os.path.join(os.path.dirname(__file__), "bse_scrips.json")
+
+def _fetch_bse_rows(params):
+    h = {**BSE_H, "Referer": "https://www.bseindia.com/", "Origin": "https://www.bseindia.com"}
+    try:
+        rows = requests.get(BSE_SCRIP, headers=h, params=params, timeout=20).json()
+        with open(BSE_CACHE, "w") as f:
+            json.dump(rows, f)
+        return rows
+    except Exception:
+        if os.path.exists(BSE_CACHE):
+            with open(BSE_CACHE) as f:
+                return json.load(f)
+        return []
 
 
 # ==================== SUBSCRIPTIONS: company matching ====================
 @st.cache_data(ttl=86400, show_spinner=False)
 def bse_by_symbol():
     params = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
-    rows = requests.get(BSE_SCRIP, headers=BSE_H, params=params, timeout=25).json()
+    rows = _fetch_bse_rows(params)
     out = {}
     for x in rows:
         sym = (x.get("scrip_id") or "").strip().upper()
@@ -616,7 +632,6 @@ if "section" not in st.session_state:
     st.session_state["section"] = default
 
 choice = st.radio("Section", sections,
-                  index=sections.index(st.session_state["section"]),
                   horizontal=True, label_visibility="collapsed", key="section")
 
 if choice == "About":
