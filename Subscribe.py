@@ -23,7 +23,7 @@ import secrets
 import json, os
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
-
+from curl_cffi import requests as creq
 import requests
 import streamlit as st
 
@@ -55,7 +55,7 @@ MAX_PER_EMAIL = 60
 NSE = "https://www.nseindia.com"
 NSE_CSV = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 
-BSE_H = {"User-Agent": UA, "Accept": "application/json",
+BSE_H = {"Accept": "application/json",
          "Referer": "https://www.bseindia.com/", "Origin": "https://www.bseindia.com"}
 BSE_SCRIP = "https://api.bseindia.com/BseIndiaAPI/api/ListofScripData_new/w"
 BSE_SCRIP_PARAMS = {"Group": "", "Scripcode": "", "segment": "Equity", "status": "Active", "scripName": ""}
@@ -124,7 +124,8 @@ def fetch_list(url, backup, session=None, **kw):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def bse_rows():
-    return json.loads(fetch_list(BSE_SCRIP, BSE_BACKUP, headers=BSE_H, params=BSE_SCRIP_PARAMS))
+    return json.loads(fetch_list(BSE_SCRIP, BSE_BACKUP, session=creq.Session(impersonate="chrome"),
+                                 headers=BSE_H, params=BSE_SCRIP_PARAMS))
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -522,16 +523,13 @@ def bse_pdf(row):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-@st.cache_data(ttl=86400, show_spinner=False)
 def bse_fetch(code, n_years, cat, subcat):
     to = dt.date.today()
     frm = to.replace(year=to.year - n_years)
     params = {"pageno": 1, "strCat": cat, "subcategory": subcat,
               "strPrevDate": frm.strftime("%Y%m%d"), "strToDate": to.strftime("%Y%m%d"),
               "strScrip": code, "strSearch": "P", "strType": "C"}
-    r = requests.get(BSE_ANN, headers=BSE_H, params=params, timeout=30)
-    st.write(r.status_code, r.text[:300])
-    data = r.json()
+    data = creq.get(BSE_ANN, headers=BSE_H, params=params, impersonate="chrome", timeout=30).json()
     table = data.get("Table", []) if isinstance(data, dict) else []
     buckets = {}
     for r in table:
