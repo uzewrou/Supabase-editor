@@ -524,13 +524,26 @@ def bse_pdf(row):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def bse_fetch(code, n_years, cat, subcat):
-    to = dt.date.today()
-    frm = to.replace(year=to.year - n_years)
-    params = {"pageno": 1, "strCat": cat, "subcategory": subcat,
-              "strPrevDate": frm.strftime("%Y%m%d"), "strToDate": to.strftime("%Y%m%d"),
-              "strScrip": code, "strSearch": "P", "strType": "C"}
-    data = creq.get(BSE_ANN, headers=BSE_H, params=params, impersonate="chrome", timeout=30).json()
-    table = data.get("Table", []) if isinstance(data, dict) else []
+    to, windows = dt.date.today(), []
+    for _ in range(n_years):
+        frm = to.replace(year=to.year - 1)
+        windows.append((frm, to))
+        to = frm - dt.timedelta(days=1)
+
+    def one(w):
+        params = {"pageno": 1, "strCat": cat, "subcategory": subcat,
+                  "strPrevDate": w[0].strftime("%Y%m%d"), "strToDate": w[1].strftime("%Y%m%d"),
+                  "strScrip": code, "strSearch": "P", "strType": "C"}
+        try:
+            data = creq.get(BSE_ANN, headers=BSE_H, params=params, impersonate="chrome", timeout=30).json()
+            return data.get("Table", []) if isinstance(data, dict) else []
+        except Exception:
+            return []
+
+    table = []
+    with ThreadPoolExecutor(max_workers=min(3, len(windows))) as ex:
+        for chunk in ex.map(one, windows):
+            table.extend(chunk)
     buckets = {}
     for r in table:
         d = bse_dt(r)
