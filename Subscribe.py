@@ -135,15 +135,24 @@ def nse_by_symbol():
     for row in csv.DictReader(text.splitlines()):
         row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
         if row.get("SYMBOL") and row.get("SERIES") == "EQ":
-            out[row["SYMBOL"].upper()] = row.get("NAME OF COMPANY", "")
+            out[row["SYMBOL"].upper()] = {"name": row.get("NAME OF COMPANY", ""),
+                                          "isin": row.get("ISIN NUMBER", "")}
     return out
 
 
 @st.cache_data(ttl=86400, show_spinner="Loading company list…")
 def matched_companies():
-    # NSE only for now (BSE removed to test NSE on its own)
-    out = [{"symbol": s, "name": n, "bse_code": None, "nse_symbol": s}
-           for s, n in nse_by_symbol().items()]
+    try:
+        rows = bse_rows()
+    except Exception:
+        rows = []
+    by_isin = {(r.get("ISIN_NUMBER") or "").strip(): str(r["SCRIP_CD"]) for r in rows}
+    by_tick = {(r.get("scrip_id") or "").strip().upper(): str(r["SCRIP_CD"]) for r in rows}
+    by_isin.pop("", None)
+    by_tick.pop("", None)
+    out = [{"symbol": s, "name": v["name"], "nse_symbol": s,
+            "bse_code": by_isin.get(v["isin"]) or by_tick.get(s)}
+           for s, v in nse_by_symbol().items()]
     if not out:
         raise RuntimeError("NSE list downloaded but had no EQ companies in it")
     out.sort(key=lambda c: c["name"].lower())
