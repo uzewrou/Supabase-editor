@@ -522,13 +522,16 @@ def bse_pdf(row):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def bse_fetch(code, n_years, cat, subcat):
     to = dt.date.today()
     frm = to.replace(year=to.year - n_years)
     params = {"pageno": 1, "strCat": cat, "subcategory": subcat,
               "strPrevDate": frm.strftime("%Y%m%d"), "strToDate": to.strftime("%Y%m%d"),
               "strScrip": code, "strSearch": "P", "strType": "C"}
-    data = requests.get(BSE_ANN, headers=BSE_H, params=params, timeout=30).json()
+    r = requests.get(BSE_ANN, headers=BSE_H, params=params, timeout=30)
+    st.write(r.status_code, r.text[:300])
+    data = r.json()
     table = data.get("Table", []) if isinstance(data, dict) else []
     buckets = {}
     for r in table:
